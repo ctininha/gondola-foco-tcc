@@ -1,217 +1,572 @@
-import React, { useState, useEffect } from "react";
-import { Link, useLocation } from "wouter";
-import { analisarGondolaComIA } from "../services/aiAuditor";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useParams } from "wouter";
+import { useAuditDraft } from "../context/AuditContext";
+import { createAudit, getAudit, getAudits, getHealth, updateOccurrence } from "../services/auditApi";
 
-export const Login = () => {
+const primaryButton = "btn-primary";
+const API_ORIGIN = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const fieldStyle = { width: "100%", minHeight: 48, border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px", fontSize: 15, background: "white" };
+const cardStyle = { border: "1px solid var(--border)", borderRadius: 14, padding: 14, background: "white" };
+
+function BottomNav({ active }) {
+  const [, setLocation] = useLocation();
+  return (
+    <nav className="bottom-nav">
+      {[["inicio", "Início", "/dashboard", "⌂"], ["historico", "Histórico", "/history", "◷"], ["perfil", "Perfil", "/profile", "○"]].map(([id, label, path, icon]) => (
+        <button key={id} className={`nav-item ${active === id ? "active" : ""}`} onClick={() => setLocation(path)}>
+          <span style={{ fontSize: 21 }}>{icon}</span><span>{label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function BackHeader({ title, back = "/dashboard", dark = false }) {
+  const [, setLocation] = useLocation();
+  return <div className="top-bar"><button className="back-btn" style={dark ? { color: "white" } : undefined} onClick={() => setLocation(back)}>‹</button><h1 style={{ fontSize: 20, fontWeight: 700, color: dark ? "white" : "var(--text-main)" }}>{title}</h1></div>;
+}
+
+function ErrorBox({ children }) {
+  return <div role="alert" style={{ background: "var(--danger-bg)", color: "var(--danger-text)", borderRadius: 10, padding: 12, fontSize: 14, margin: "12px 0" }}>{children}</div>;
+}
+
+function InfoBox({ children }) {
+  return <div style={{ background: "var(--primary-light)", color: "var(--primary-dark)", borderRadius: 10, padding: 12, fontSize: 13, margin: "12px 0" }}>{children}</div>;
+}
+
+function parseCsv(text) {
+  const firstLine = text.split(/\r?\n/).find(line => line.trim()) || "";
+  const delimiter = [",", ";", "\t"].sort((a, b) => firstLine.split(b).length - firstLine.split(a).length)[0];
+  const rows = [];
+  let row = [], value = "", quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === '"' && quoted && text[i + 1] === '"') { value += '"'; i += 1; }
+    else if (char === '"') quoted = !quoted;
+    else if (char === delimiter && !quoted) { row.push(value.trim()); value = ""; }
+    else if ((char === "\n" || char === "\r") && !quoted) {
+      if (value.length || row.length) { row.push(value.trim()); rows.push(row); }
+      row = []; value = "";
+      if (char === "\r" && text[i + 1] === "\n") i += 1;
+    } else value += char;
+  }
+  if (value.length || row.length) { row.push(value.trim()); rows.push(row); }
+  if (rows.length < 2) throw new Error("A planilha precisa ter cabeçalho e pelo menos uma linha.");
+  const normalize = s => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const headers = rows[0].map(normalize);
+  return rows.slice(1).filter(r => r.some(c => c.trim())).map((r, index) => {
+    const obj = { __line: index + 2 };
+    headers.forEach((h, i) => { obj[h] = r[i] ?? ""; });
+    return obj;
+  });
+}
+function pick(row, names) {
+  for (const name of names) if (row[name] !== undefined && row[name] !== "") return row[name];
+  return "";
+}
+function parseMoney(value) {
+  if (value === "" || value == null) return null;
+  const raw = String(value).replace(/[R$\s]/g, "");
+  const cleaned = raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw;
+  const number = Number(cleaned);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+function parseDateBR(value, endOfDay = false) {
+  if (!value) return null;
+  const match = String(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return null;
+  return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), ...(endOfDay ? [23, 59, 59, 999] : [0, 0, 0, 0]));
+}
+async function readText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Não foi possível ler a planilha."));
+    reader.readAsText(file, "UTF-8");
+  });
+}
+function formatPercent(value) {
+  return value == null ? "Não calculável" : `${Number(value).toFixed(1).replace(".", ",")}%`;
+}
+function formatPrice(value) {
+  return value == null ? "—" : Number(value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+function dateTime(value) {
+  if (!value) return "—";
+  return new Date(value).toLocaleString("pt-BR");
+}
+function statusBadge(status) {
+  const style = status === "Resolvida" ? "badge-success" : status === "Contestada" ? "badge-neutral" : status === "Justificada" ? "badge-warning" : "badge-danger";
+  return <span className={`badge ${style}`}>{status || "Pendente"}</span>;
+}
+
+export function Login() {
   const [, setLocation] = useLocation();
   const [matricula, setMatricula] = useState("");
   const [senha, setSenha] = useState("");
-
-  const handleLogin = (e) => {
-    e.preventDefault();
-    localStorage.setItem("logado", "true");
+  const [erro, setErro] = useState("");
+  const entrar = event => {
+    event.preventDefault();
+    if (!matricula.trim() || !senha.trim()) { setErro("Informe matrícula e senha para entrar no ambiente de demonstração."); return; }
+    sessionStorage.setItem("gondola-demo-user", matricula.trim());
     setLocation("/dashboard");
   };
-
   return (
-    <div className="screen-no-nav" style={{ justifyContent: "center", alignItems: "center", minHeight: "100vh", background: "#FFFFFF", padding: "20px" }}>
-      <div style={{ width: "100%", maxWidth: "340px", display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <h1 style={{ fontSize: "24px", fontWeight: "800", color: "#0F172A", marginBottom: "4px" }}>GôndolaFoco</h1>
-        <p style={{ fontSize: "13px", color: "#64748B", marginBottom: "24px" }}>De olho na gôndola, foco no resultado</p>
-        <form onSubmit={handleLogin} style={{ width: "100%", display: "flex", flexDirection: "column", gap: "14px" }}>
-          <input type="text" placeholder="Matrícula" value={matricula} onChange={(e) => setMatricula(e.target.value)} style={{ width: "100%", padding: "12px", backgroundColor: "#F8FAFC", border: "1.5px solid #E2E8F0", borderRadius: "12px" }} />
-          <input type="password" placeholder="Senha" value={senha} onChange={(e) => setSenha(e.target.value)} style={{ width: "100%", padding: "12px", backgroundColor: "#F8FAFC", border: "1.5px solid #E2E8F0", borderRadius: "12px" }} />
-          <button type="submit" className="btn-primary">Entrar no Sistema</button>
+    <div className="screen-no-nav" style={{ justifyContent: "space-between", paddingTop: 48 }}>
+      <div>
+        <div style={{ textAlign: "center", marginBottom: 34 }}>
+          <div style={{ width: 72, height: 72, borderRadius: 20, background: "var(--primary)", color: "white", margin: "0 auto 14px", display: "grid", placeItems: "center", fontSize: 34 }}>⌗</div>
+          <h1 style={{ fontSize: 28, fontWeight: 800 }}>GôndolaFoco</h1>
+          <p style={{ color: "var(--text-muted)", marginTop: 5 }}>De olho na gôndola, foco no resultado</p>
+        </div>
+        <form onSubmit={entrar} style={{ display: "grid", gap: 14 }}>
+          <label style={{ fontSize: 14, fontWeight: 600 }}>Matrícula<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} value={matricula} onChange={e => setMatricula(e.target.value)} placeholder="Sua matrícula" /></label>
+          <label style={{ fontSize: 14, fontWeight: 600 }}>Senha<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} type="password" value={senha} onChange={e => setSenha(e.target.value)} placeholder="Senha" /></label>
+          {erro && <ErrorBox>{erro}</ErrorBox>}
+          <button className={primaryButton} type="submit">Entrar</button>
         </form>
       </div>
+      <InfoBox>Ambiente de demonstração do TCC. A autenticação real por matrícula, senha e perfis depende do cadastro de usuários no módulo administrativo.</InfoBox>
     </div>
   );
-};
+}
 
-export const Dashboard = () => {
+export function Dashboard() {
   const [, setLocation] = useLocation();
-  if (!localStorage.getItem("logado")) { setLocation("/"); return null; }
-
+  const [audits, setAudits] = useState([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    getAudits().then(data => { if (active) setAudits(data); }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
+  const today = new Date().toLocaleDateString("pt-BR");
+  const todays = audits.filter(a => new Date(a.createdAt).toLocaleDateString("pt-BR") === today);
   return (
-    <div className="screen" style={{ paddingBottom: "90px", backgroundColor: "#F8FAFC", overflowY: "auto", display: "flex", flexDirection: "column" }}>
-      <div style={{ background: "white", padding: "20px 16px", borderBottom: "1px solid #E2E8F0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <h2 style={{ fontSize: "20px", fontWeight: "800", color: "#0F172A", margin: 0 }}>Olá, Ana</h2>
-          <p style={{ fontSize: "12px", color: "#64748B", margin: "2px 0 0 0" }}>Mercado Bom Preço · Turno da manhã</p>
-        </div>
-        <div style={{ width: "40px", height: "40px", borderRadius: "50%", background: "#E0E7FF", color: "#4F46E5", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold", fontSize: "14px" }}>
-          AM
-        </div>
+    <div className="screen">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 22 }}>
+        <div><h1 style={{ fontSize: 25, fontWeight: 800 }}>Olá!</h1><p style={{ color: "var(--text-muted)", fontSize: 14 }}>GôndolaFoco · Auditoria de execução</p></div>
+        <button onClick={() => setLocation("/profile")} style={{ border: 0, borderRadius: 30, width: 44, height: 44, background: "var(--primary-light)", color: "var(--primary)", fontWeight: 800 }}>GF</button>
       </div>
-
-      <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "16px", flex: 1 }}>
-        <div style={{ background: "linear-gradient(135deg, #1E40AF 0%, #3B82F6 100%)", borderRadius: "16px", padding: "20px", color: "white", boxShadow: "0 4px 12px rgba(59, 130, 246, 0.25)" }}>
-          <h3 style={{ fontSize: "16px", fontWeight: "700", marginBottom: "6px" }}>Auditoria Inteligente</h3>
-          <p style={{ fontSize: "12px", opacity: 0.9, marginBottom: "16px", lineHeight: "1.4" }}>
-            Compare fotos de gôndolas com o planograma e detete rupturas automaticamente com IA.
-          </p>
-          <Link href="/analyses/new" style={{ textDecoration: "none" }}>
-            <button style={{ background: "white", color: "#1E40AF", border: "none", padding: "12px 16px", borderRadius: "8px", fontWeight: "700", fontSize: "13px", cursor: "pointer", width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
-              📷 Iniciar Nova Auditoria
-            </button>
-          </Link>
-        </div>
+      <div style={{ background: "var(--primary-light)", padding: 18, borderRadius: 16, marginBottom: 22 }}>
+        <div style={{ fontSize: 13, color: "var(--primary)", fontWeight: 700 }}>Auditorias registradas hoje</div>
+        <div style={{ fontSize: 32, fontWeight: 800, margin: "5px 0" }}>{todays.length}</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Contagem baseada somente em registros salvos no banco local.</div>
       </div>
-
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><h2 style={{ fontSize: 18 }}>Auditorias recentes</h2><button onClick={() => setLocation("/history")} style={{ border: 0, background: "none", color: "var(--primary)", fontWeight: 700 }}>Ver histórico</button></div>
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {loading ? <p style={{ color: "var(--text-muted)" }}>Carregando auditorias...</p> : audits.length === 0 ? <div style={cardStyle}><strong>Nenhuma auditoria registrada.</strong><p style={{ marginTop: 6, color: "var(--text-muted)", fontSize: 14 }}>Importe o planograma, selecione as fotos e faça a primeira análise real.</p></div> : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {audits.slice(0, 5).map(a => <button key={a.id} onClick={() => setLocation(`/analyses/${a.id}/result`)} style={{ ...cardStyle, textAlign: "left", cursor: "pointer" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><strong>{a.corridor} · {a.module}</strong><span className="badge badge-neutral">{a.indicators?.IGE == null ? "IGE —" : `IGE ${a.indicators.IGE}`}</span></div>
+            <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>{dateTime(a.createdAt)} · {a.occurrenceCount} ocorrência(s)</div>
+          </button>)}
+        </div>
+      )}
+      <div style={{ marginTop: "auto", paddingTop: 22 }}><button className={primaryButton} onClick={() => setLocation("/analyses/new")}>＋ Nova auditoria</button></div>
       <BottomNav active="inicio" />
     </div>
   );
-};
+}
 
-export const NewAnalysis = () => {
+export function NewAnalysis() {
   const [, setLocation] = useLocation();
-  const [gondolaFile, setGondolaFile] = useState(null);
-  const [planogramaFile, setPlanogramaFile] = useState(null);
+  const { setDraft } = useAuditDraft();
+  const [corridor, setCorridor] = useState("");
+  const [moduleName, setModuleName] = useState("");
+  const [planogramCsv, setPlanogramCsv] = useState(null);
+  const [pricesCsv, setPricesCsv] = useState(null);
+  const [planogramImage, setPlanogramImage] = useState(null);
+  const [items, setItems] = useState([]);
+  const [warnings, setWarnings] = useState([]);
+  const [error, setError] = useState("");
+  const [reading, setReading] = useState(false);
 
-  const handleProcessar = async (e) => {
-    e.preventDefault();
-    if (!gondolaFile || !planogramaFile) {
-      alert("Por favor, selecione a foto da gôndola e o planograma.");
-      return;
-    }
-    setLocation("/analyses/processing");
+  const importFiles = async () => {
+    setError(""); setWarnings([]); setItems([]); setReading(true);
+    try {
+      if (!planogramCsv) throw new Error("Selecione a planilha CSV do planograma.");
+      if (!corridor.trim() || !moduleName.trim()) throw new Error("Informe o corredor e o código do módulo.");
+      const planRows = parseCsv(await readText(planogramCsv));
+      const allItems = planRows.map(row => {
+        const sku = pick(row, ["codigodebarras", "sku", "codigo", "ean"]);
+        const name = pick(row, ["nome", "produto", "descricao"]);
+        const module = pick(row, ["modulo", "modulodagondola"]);
+        const shelf = Number(pick(row, ["prateleira", "shelf"]));
+        const position = Number(pick(row, ["posicao", "position"]));
+        const faces = Number(pick(row, ["faces"])) || 1;
+        if (!/^\d{8,14}$/.test(String(sku))) throw new Error(`Linha ${row.__line}: código de barras deve ter de 8 a 14 dígitos.`);
+        if (!name || !module || !Number.isInteger(shelf) || shelf < 1 || !Number.isInteger(position) || position < 1) throw new Error(`Linha ${row.__line}: confira módulo, prateleira, posição e nome.`);
+        return { sku: String(sku), name, module: String(module), shelf, position, faces };
+      });
+      const moduleItems = allItems.filter(x => x.module.toLowerCase() === moduleName.trim().replace(/^m[oó]dulo\s*/i, "").toLowerCase());
+      if (!moduleItems.length) throw new Error(`Não encontrei itens para o módulo "${moduleName}" na planilha.`);
+      const duplicatePositions = new Set();
+      for (const item of moduleItems) {
+        const key = `${item.shelf}:${item.position}`;
+        if (duplicatePositions.has(key)) throw new Error(`Há mais de um SKU na prateleira ${item.shelf}, posição ${item.position}.`);
+        duplicatePositions.add(key);
+      }
+      const warningList = [];
+      let merged = moduleItems;
+      if (pricesCsv) {
+        const priceRows = parseCsv(await readText(pricesCsv));
+        const now = new Date();
+        const activePrices = new Map();
+        for (const row of priceRows) {
+          const sku = String(pick(row, ["codigodebarras", "sku", "codigo", "ean"]));
+          const price = parseMoney(pick(row, ["preco", "valor"]));
+          const start = parseDateBR(pick(row, ["vigenciainicio", "inicio"]));
+          const endValue = pick(row, ["vigenciafim", "fim"]);
+          const end = endValue ? parseDateBR(endValue, true) : null;
+          if (!/^\d{8,14}$/.test(sku) || price == null || !start || (endValue && !end)) throw new Error(`Linha ${row.__line} da tabela de preços: confira SKU, preço e vigência (dd/mm/aaaa).`);
+          if (start <= now && (!end || end >= now)) {
+            if (activePrices.has(sku)) throw new Error(`Há mais de um preço vigente para o SKU ${sku}.`);
+            activePrices.set(sku, price);
+          }
+        }
+        merged = moduleItems.map(item => ({ ...item, price: activePrices.has(item.sku) ? activePrices.get(item.sku) : null }));
+        const withoutPrice = merged.filter(x => x.price == null).length;
+        if (withoutPrice) warningList.push(`${withoutPrice} SKU(s) não têm preço vigente cadastrado; não serão avaliados no IDP.`);
+      } else {
+        merged = moduleItems.map(item => ({ ...item, price: null }));
+        warningList.push("Tabela de preços não enviada: o IDP não poderá ser calculado nesta auditoria.");
+      }
+      setItems(merged);
+      setWarnings(warningList);
+    } catch (e) { setError(e.message); }
+    finally { setReading(false); }
+  };
+
+  const continueToCapture = () => {
+    if (!items.length) { setError("Importe e valide o planograma antes de continuar."); return; }
+    if (!planogramImage) { setError("Selecione também a imagem de referência do planograma."); return; }
+    setDraft({ corridor: corridor.trim(), moduleName: moduleName.trim(), planogramName: planogramCsv?.name || "Planograma importado", planogramItems: items, planogramFile: planogramImage, shelfPhoto: null });
+    setLocation("/analyses/camera");
   };
 
   return (
-    <div className="screen">
-      <div className="top-bar">
-        <Link href="/dashboard"><button className="back-btn">‹</button></Link>
-        <h2>Nova auditoria</h2>
-      </div>
-      <form onSubmit={handleProcessar} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-        <label>1. Foto da gôndola: <input type="file" accept="image/*" onChange={(e) => setGondolaFile(e.target.files[0])} /></label>
-        <label>2. Planograma: <input type="file" accept="image/*" onChange={(e) => setPlanogramaFile(e.target.files[0])} /></label>
-        <button type="submit" className="btn-primary">🤖 Iniciar Análise com IA Real</button>
-      </form>
+    <div className="screen-no-nav">
+      <BackHeader title="Nova auditoria" />
+      <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 16 }}>Selecione o módulo e carregue os arquivos de referência usados na comparação.</p>
+      <label style={{ fontSize: 14, fontWeight: 600 }}>Corredor<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} value={corridor} onChange={e => setCorridor(e.target.value)} placeholder="Ex.: Corredor 4 · Laticínios" /></label>
+      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>Módulo (código da coluna Módulo)<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="Ex.: B" /></label>
+      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 16 }}>1. Planograma em CSV<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept=".csv,text/csv" onChange={e => { setPlanogramCsv(e.target.files?.[0] || null); setItems([]); }} /></label>
+      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>2. Tabela de preços em CSV (recomendado)<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept=".csv,text/csv" onChange={e => { setPricesCsv(e.target.files?.[0] || null); setItems([]); }} /></label>
+      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>3. Imagem do planograma<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept="image/jpeg,image/png,image/webp" onChange={e => setPlanogramImage(e.target.files?.[0] || null)} /></label>
+      <InfoBox>O CSV do planograma deve conter: Módulo, Prateleira, Posição, Código de barras, Nome, Marca e Faces. A tabela de preços deve conter: Código de barras, Preço, Vigência início e Vigência fim (opcional). Os arquivos abaixo são exemplos fictícios do Anexo A.</InfoBox>
+      <div style={{ display: "flex", gap: 12, fontSize: 13, marginBottom: 8 }}><a href="/modelos/planograma-exemplo.csv" download>Baixar modelo de planograma</a><a href="/modelos/precos-exemplo.csv" download>Baixar modelo de preços</a></div>
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {warnings.map(w => <div key={w} style={{ color: "var(--warning-text)", fontSize: 13, marginBottom: 6 }}>⚠ {w}</div>)}
+      <button className="btn-outline" style={{ marginTop: 10 }} disabled={reading} onClick={importFiles}>{reading ? "Validando planilhas..." : "Validar planilhas"}</button>
+      {items.length > 0 && <div style={{ ...cardStyle, marginTop: 12 }}><strong>{items.length} SKU(s) carregados para o módulo {moduleName}</strong><p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 4 }}>Nenhum indicador será calculado com produtos fora desta lista.</p></div>}
+      <div style={{ marginTop: "auto", paddingTop: 18 }}><button className={primaryButton} disabled={!items.length || !planogramImage} onClick={continueToCapture}>Continuar para captura</button></div>
     </div>
   );
-};
+}
 
-export const AnalyzingProcess = () => {
+export function GuidedCamera() {
   const [, setLocation] = useLocation();
+  const { draft, setDraft } = useAuditDraft();
+  const [preview, setPreview] = useState("");
+  const [error, setError] = useState("");
   useEffect(() => {
-    const t = setTimeout(() => setLocation("/analyses/123/result"), 1200);
-    return () => clearTimeout(t);
-  }, [setLocation]);
-
+    if (!draft.planogramItems.length) setLocation("/analyses/new");
+  }, [draft.planogramItems.length, setLocation]);
+  useEffect(() => {
+    if (!draft.shelfPhoto) { setPreview(""); return; }
+    const url = URL.createObjectURL(draft.shelfPhoto);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [draft.shelfPhoto]);
+  const selectPhoto = file => {
+    setError("");
+    if (!file) return;
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { setError("Use uma imagem JPG, PNG ou WEBP."); return; }
+    if (file.size > 12 * 1024 * 1024) { setError("A imagem deve ter até 12 MB."); return; }
+    setDraft(current => ({ ...current, shelfPhoto: file }));
+  };
   return (
-    <div className="screen" style={{ justifyContent: "center", alignItems: "center", textAlign: "center" }}>
-      <h2>A analisar com IA...</h2>
-    </div>
-  );
-};
-
-export const AnalysisResult = () => (
-  <div className="screen" style={{ paddingBottom: "40px", backgroundColor: "#F8FAFC", overflowY: "auto" }}>
-    <div className="top-bar" style={{ background: "white", padding: "12px 16px", borderBottom: "1px solid #E2E8F0" }}>
-      <Link href="/dashboard"><button className="back-btn">‹</button></Link>
-      <h2>Relatório de Auditoria</h2>
-    </div>
-    <div style={{ padding: "16px" }}>
-      <h1 style={{ fontSize: "36px", fontWeight: "800", color: "#0F172A" }}>78%</h1>
-      <Link href="/dashboard" style={{ textDecoration: "none" }}>
-        <button className="btn-primary" style={{ marginTop: "10px" }}>Concluir e Voltar ao Início</button>
-      </Link>
-    </div>
-  </div>
-);
-
-export const History = () => (
-  <div className="screen" style={{ paddingBottom: "90px", backgroundColor: "#F8FAFC" }}>
-    <div style={{ background: "white", padding: "16px", borderBottom: "1px solid #E2E8F0" }}>
-      <h2 style={{ fontSize: "18px", fontWeight: "800", color: "#0F172A", margin: 0 }}>Histórico de Auditorias</h2>
-    </div>
-    <div style={{ padding: "16px" }}>
-      <div style={{ background: "white", padding: "14px", borderRadius: "12px", boxShadow: "0 2px 6px rgba(0,0,0,0.03)" }}>
-        <h4 style={{ fontSize: "14px", fontWeight: "700", color: "#0F172A", margin: 0 }}>Corredor 04 · Conservas</h4>
-        <span style={{ fontSize: "12px", color: "#64748B" }}>Hoje, 08:30 · IGE 78%</span>
+    <div className="screen-no-nav" style={{ background: "#172033", color: "white" }}>
+      <BackHeader title="Câmera guiada" back="/analyses/new" dark />
+      <p style={{ fontSize: 13, color: "#CBD5E1", marginBottom: 14 }}>Módulo {draft.moduleName} · {draft.corridor}</p>
+      <div style={{ border: "1px solid #64748B", borderRadius: 14, minHeight: 260, display: "grid", placeItems: "center", overflow: "hidden", background: "#263449" }}>
+        {preview ? <img src={preview} alt="Prévia da foto da gôndola" style={{ width: "100%", maxHeight: 380, objectFit: "contain" }} /> : <div style={{ padding: 24, textAlign: "center", color: "#CBD5E1" }}><div style={{ fontSize: 54 }}>▦</div><p>Selecione uma foto da gôndola para visualizar aqui.</p></div>}
+      </div>
+      <p style={{ fontSize: 13, color: "#E2E8F0", margin: "14px 0" }}>Enquadre a gôndola inteira, de frente, com boa iluminação e sem pessoas.</p>
+      <label style={{ display: "block", background: "white", color: "var(--text-main)", padding: 14, borderRadius: 12, textAlign: "center", fontWeight: 700, cursor: "pointer" }}>
+        {draft.shelfPhoto ? "Trocar foto da gôndola" : "Escolher foto / abrir câmera"}
+        <input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={e => selectPhoto(e.target.files?.[0])} style={{ display: "none" }} />
+      </label>
+      <p style={{ fontSize: 12, color: "#CBD5E1", marginTop: 8 }}>No Mac, o seletor permite escolher uma imagem salva no computador. Em celular compatível, pode abrir a câmera.</p>
+      {error && <div style={{ color: "#FCA5A5", marginTop: 10 }}>{error}</div>}
+      <div style={{ marginTop: "auto", paddingTop: 18, display: "grid", gap: 10 }}>
+        <button className={primaryButton} disabled={!draft.shelfPhoto} onClick={() => setLocation("/analyses/review")}>Revisar foto</button>
+        <button className="btn-outline" onClick={() => setLocation("/analyses/new")}>Voltar</button>
       </div>
     </div>
-    <BottomNav active="historico" />
-  </div>
-);
+  );
+}
 
-export const Profile = () => {
+export function ReviewPhoto() {
   const [, setLocation] = useLocation();
+  const { draft } = useAuditDraft();
+  const [photoUrl, setPhotoUrl] = useState("");
+  useEffect(() => {
+    if (!draft.shelfPhoto) { setLocation("/analyses/camera"); return; }
+    const url = URL.createObjectURL(draft.shelfPhoto);
+    setPhotoUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [draft.shelfPhoto, setLocation]);
   return (
-    <div className="screen" style={{ paddingBottom: "90px", backgroundColor: "#F8FAFC" }}>
-      <div style={{ background: "white", padding: "24px 16px", borderBottom: "1px solid #E2E8F0", textAlign: "center" }}>
-        <h2 style={{ fontSize: "18px", fontWeight: "800", color: "#0F172A", margin: 0 }}>Ana Martins</h2>
-        <span style={{ fontSize: "12px", color: "#64748B" }}>Matrícula #4029</span>
+    <div className="screen-no-nav">
+      <BackHeader title="Revisar foto" back="/analyses/camera" />
+      {photoUrl && <img src={photoUrl} alt="Foto selecionada para auditoria" style={{ width: "100%", maxHeight: 330, objectFit: "contain", background: "#F1F5F9", borderRadius: 14 }} />}
+      <h2 style={{ fontSize: 17, marginTop: 18 }}>Antes de enviar</h2>
+      <ul style={{ paddingLeft: 20, color: "var(--text-muted)", fontSize: 14, lineHeight: 1.8, marginTop: 8 }}>
+        <li>Confira se toda a gôndola está visível.</li><li>Evite reflexos e imagens tremidas.</li><li>Evite fotografar clientes ou funcionários.</li>
+      </ul>
+      <InfoBox>{draft.planogramItems.length} SKU(s) serão comparados com o planograma carregado. A IA pode indicar itens indeterminados para revisão humana.</InfoBox>
+      <div style={{ marginTop: "auto", display: "grid", gap: 10 }}>
+        <button className={primaryButton} onClick={() => setLocation("/analyses/processing")}>Enviar para análise</button>
+        <button className="btn-outline" onClick={() => setLocation("/analyses/camera")}>Refazer / escolher outra foto</button>
       </div>
-      <div style={{ padding: "16px" }}>
-        <button onClick={() => { localStorage.removeItem("logado"); setLocation("/"); }} style={{ background: "#FEE2E2", color: "#991B1B", border: "none", padding: "12px", borderRadius: "12px", fontWeight: "700", width: "100%", cursor: "pointer" }}>
-          Sair da Conta
-        </button>
-      </div>
-      <BottomNav active="perfil" />
     </div>
   );
-};
+}
 
-export const GuidedCamera = () => <div className="screen"><Link href="/dashboard">Voltar</Link></div>;
-export const ReviewPhoto = () => <div className="screen"><Link href="/dashboard">Voltar</Link></div>;
-export const OccurrencesList = () => <div className="screen"><Link href="/dashboard">Voltar</Link></div>;
-export const OccurrenceDetail = () => <div className="screen"><Link href="/dashboard">Voltar</Link></div>;
-export const AnalysisSuccess = () => <div className="screen"><Link href="/dashboard">Voltar</Link></div>;
-export const NotFound = () => <div className="screen"><h2>404</h2></div>;
-
-const BottomNav = ({ active }) => {
-  const navItems = [
-    {
-      id: "inicio",
-      label: "Início",
-      path: "/dashboard",
-      svg: (isActive) => (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill={isActive ? "#1E40AF" : "none"} stroke={isActive ? "#1E40AF" : "#64748B"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-          <polyline points="9 22 9 12 15 12 15 22"></polyline>
-        </svg>
-      )
-    },
-    {
-      id: "historico",
-      label: "Histórico",
-      path: "/history",
-      svg: (isActive) => (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={isActive ? "#1E40AF" : "#64748B"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M1.05 12A11 11 0 1 1 3.2 18.9L1 21"></path>
-          <polyline points="1 13 1 21 9 21"></polyline>
-          <polyline points="12 6 12 12 16 14"></polyline>
-        </svg>
-      )
-    },
-    {
-      id: "perfil",
-      label: "Perfil",
-      path: "/profile",
-      svg: (isActive) => (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={isActive ? "#1E40AF" : "#64748B"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>
-      )
-    }
-  ];
-
+export function AnalyzingProcess() {
+  const [, setLocation] = useLocation();
+  const { draft } = useAuditDraft();
+  const [step, setStep] = useState(1);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!draft.shelfPhoto || !draft.planogramFile || !draft.planogramItems.length) { setLocation("/analyses/new"); return; }
+    let alive = true;
+    const timers = [setTimeout(() => alive && setStep(2), 700), setTimeout(() => alive && setStep(3), 1800)];
+    createAudit({
+      shelfPhoto: draft.shelfPhoto,
+      planogramPhoto: draft.planogramFile,
+      planogramItems: draft.planogramItems,
+      corridor: draft.corridor,
+      moduleName: draft.moduleName,
+      planogramName: draft.planogramName,
+    }).then(result => {
+      if (!alive) return;
+      setStep(4);
+      localStorage.setItem("gondola:last-audit-id", result.id);
+      setLocation(`/analyses/${result.id}/result`);
+    }).catch(e => { if (alive) setError(e.message); });
+    return () => { alive = false; timers.forEach(clearTimeout); };
+  }, [draft, retry, setLocation]);
   return (
-    <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: "430px", background: "white", borderTop: "1px solid #E2E8F0", display: "flex", justifyContent: "space-around", padding: "10px 0", zIndex: 100, boxShadow: "0 -2px 10px rgba(0,0,0,0.03)" }}>
-      {navItems.map((item) => {
-        const isActive = active === item.id;
-        return (
-          <Link key={item.id} href={item.path} style={{ textDecoration: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", padding: "4px 16px", borderRadius: "10px" }}>
-            {item.svg(isActive)}
-            <span style={{ fontSize: "11px", fontWeight: isActive ? "700" : "500", color: isActive ? "#1E40AF" : "#64748B" }}>
-              {item.label}
-            </span>
-          </Link>
-        );
-      })}
+    <div className="screen-no-nav">
+      <BackHeader title="Analisando" />
+      <div style={{ textAlign: "center", padding: "34px 0" }}><div style={{ width: 116, height: 116, border: "10px solid #E2E8F0", borderTopColor: "var(--primary)", borderRadius: "50%", margin: "0 auto 18px", display: "grid", placeItems: "center", fontSize: 22, fontWeight: 800 }}>{step} de 4</div><h2>Analisando sua gôndola</h2><p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 6 }}>Aguarde a resposta do serviço de IA.</p></div>
+      {["Foto enviada", "Comparando com o planograma", "Lendo preços legíveis", "Calculando indicadores"].map((label, i) => <div key={label} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 0" }}><span>{step > i + 1 ? "✓" : step === i + 1 ? "◉" : "○"}</span><span style={{ fontWeight: step === i + 1 ? 700 : 400 }}>{label}</span></div>)}
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {error && <div style={{ marginTop: "auto", display: "grid", gap: 10 }}><button className={primaryButton} onClick={() => { setError(""); setStep(1); setRetry(x => x + 1); }}>Tentar novamente</button><button className="btn-outline" onClick={() => setLocation("/analyses/review")}>Voltar à revisão</button></div>}
+      {!error && <button className="btn-outline" style={{ marginTop: "auto" }} onClick={() => setLocation("/dashboard")}>Voltar ao início</button>}
     </div>
   );
-};
+}
+
+function useAudit(id) {
+  const [audit, setAudit] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    getAudit(id).then(data => { if (alive) setAudit(data); }).catch(e => { if (alive) setError(e.message); }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [id]);
+  return { audit, setAudit, error, loading };
+}
+
+export function AnalysisResult() {
+  const { id } = useParams();
+  const [, setLocation] = useLocation();
+  const { audit, error, loading } = useAudit(id);
+  if (loading) return <div className="screen-no-nav">Carregando resultado real...</div>;
+  if (error) return <div className="screen-no-nav"><ErrorBox>{error}</ErrorBox><button className="btn-outline" onClick={() => setLocation("/dashboard")}>Voltar ao início</button></div>;
+  const metrics = audit.indicators;
+  const occurrenceCount = metrics.occurrences.length;
+  return (
+    <div className="screen-no-nav">
+      <BackHeader title="Resultado" />
+      <p style={{ color: "var(--text-muted)", fontSize: 13 }}>{audit.corridor} · Módulo {audit.module} · {dateTime(audit.createdAt)}</p>
+      {audit.planogramName && <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>Referência: {audit.planogramName}</p>}
+      <div style={{ display: "grid", placeItems: "center", padding: "22px 0" }}>
+        <div style={{ width: 150, height: 150, border: "12px solid var(--primary-light)", borderTopColor: "var(--primary)", borderRadius: "50%", display: "grid", placeContent: "center", textAlign: "center" }}>
+          <strong style={{ fontSize: 44 }}>{metrics.IGE ?? "—"}</strong><span style={{ fontSize: 12, color: "var(--text-muted)" }}>de 100</span>
+        </div>
+        <strong style={{ marginTop: 12 }}>Índice geral de execução</strong>
+        <span className="badge badge-neutral" style={{ marginTop: 6 }}>{metrics.classification}</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
+        <div style={{ ...cardStyle, textAlign: "center", padding: 10 }}><div style={{ fontSize: 12, color: "var(--text-muted)" }}>Ruptura (IR)</div><strong style={{ fontSize: 19 }}>{formatPercent(metrics.IR)}</strong></div>
+        <div style={{ ...cardStyle, textAlign: "center", padding: 10 }}><div style={{ fontSize: 12, color: "var(--text-muted)" }}>Planograma (ICP)</div><strong style={{ fontSize: 19 }}>{formatPercent(metrics.ICP)}</strong></div>
+        <div style={{ ...cardStyle, textAlign: "center", padding: 10 }}><div style={{ fontSize: 12, color: "var(--text-muted)" }}>Preço (IDP)</div><strong style={{ fontSize: 19 }}>{formatPercent(metrics.IDP)}</strong><div style={{ fontSize: 11, color: "var(--text-muted)" }}>{metrics.D} item(ns)</div></div>
+      </div>
+      <div style={{ ...cardStyle, marginTop: 14 }}>
+        <strong>{occurrenceCount} ocorrência(s) identificada(s)</strong>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 5 }}>{metrics.A} ruptura(s) · {metrics.positionCount ?? metrics.occurrences.filter(o => o.type === "Posição").length} fora de posição · {metrics.D} divergência(s) de preço</p>
+        <p style={{ fontSize: 13, marginTop: 8 }}>SKUs esperados: {metrics.expected} · Avaliáveis: {metrics.V} · Indeterminados: {metrics.indeterminate}</p>
+      </div>
+      {(metrics.IR == null || metrics.ICP == null || metrics.IDP == null) && <InfoBox>Um ou mais indicadores não puderam ser calculados por falta de itens avaliáveis ou preços vigentes e legíveis. O IGE usa a média dos componentes disponíveis.</InfoBox>}
+      {metrics.needsNewPhoto && <ErrorBox>{metrics.indeterminate} item(ns) ficaram indeterminados. A especificação recomenda refazer a foto quando ultrapassam 20% dos itens esperados.</ErrorBox>}
+      {audit.photoQuality === "poor" && <ErrorBox>A IA classificou a qualidade da foto como baixa. Revise os itens indeterminados antes de concluir.</ErrorBox>}
+      {audit.aiSummary && <div style={{ marginTop: 12, fontSize: 14, color: "var(--text-muted)" }}><strong>Resumo da análise:</strong> {audit.aiSummary}</div>}
+      <div style={{ marginTop: "auto", paddingTop: 18, display: "grid", gap: 10 }}>
+        <button className={primaryButton} onClick={() => setLocation(`/analyses/${id}/occurrences`)}>{occurrenceCount ? "Ver ocorrências" : "Concluir corredor"}</button>
+        <button className="btn-outline" onClick={() => setLocation("/analyses/new")}>Nova auditoria</button>
+      </div>
+    </div>
+  );
+}
+
+export function OccurrencesList() {
+  const { id } = useParams();
+  const [, setLocation] = useLocation();
+  const { audit, error, loading, setAudit } = useAudit(id);
+  const [filter, setFilter] = useState("Todas");
+  const [saving, setSaving] = useState("");
+  const items = audit?.indicators?.occurrences || [];
+  const visible = items.filter(item => item.status !== "Contestada" && (filter === "Todas" || item.type === filter));
+  const treated = items.filter(item => ["Resolvida", "Justificada", "Contestada"].includes(item.status)).length;
+  const finish = items.every(item => ["Resolvida", "Justificada", "Contestada"].includes(item.status));
+  const changeStatus = async (item, status, note = "") => {
+    setSaving(item.occurrenceKey);
+    try {
+      await updateOccurrence(id, item.occurrenceKey, status, note);
+      const updated = await getAudit(id); setAudit(updated);
+    } catch (e) { window.alert(e.message); }
+    finally { setSaving(""); }
+  };
+  if (loading) return <div className="screen-no-nav">Carregando ocorrências...</div>;
+  if (error) return <div className="screen-no-nav"><ErrorBox>{error}</ErrorBox></div>;
+  return (
+    <div className="screen-no-nav">
+      <BackHeader title="Ocorrências" back={`/analyses/${id}/result`} />
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 12 }}>
+        {["Todas", "Ruptura", "Preço", "Posição", "Preço ilegível", "Etiqueta ausente"].map(type => <button key={type} onClick={() => setFilter(type)} style={{ border: filter === type ? 0 : "1px solid var(--border)", background: filter === type ? "var(--primary)" : "white", color: filter === type ? "white" : "var(--text-main)", borderRadius: 20, padding: "8px 12px", whiteSpace: "nowrap" }}>{type} {type === "Todas" ? items.filter(x => x.status !== "Contestada").length : items.filter(x => x.type === type && x.status !== "Contestada").length}</button>)}
+      </div>
+      {visible.length === 0 ? <div style={cardStyle}>Nenhuma ocorrência neste filtro.</div> : <div style={{ display: "grid", gap: 10, overflowY: "auto" }}>
+        {visible.map(item => <button key={item.occurrenceKey} onClick={() => setLocation(`/analyses/${id}/occurrences/${encodeURIComponent(item.occurrenceKey)}`)} style={{ ...cardStyle, textAlign: "left", cursor: "pointer" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><strong>{item.name}</strong>{statusBadge(item.status)}</div>
+          <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 5 }}>SKU {item.sku} · {item.type}</div>
+          <div style={{ fontSize: 13, marginTop: 6 }}>{item.evidence}</div>
+          {saving === item.occurrenceKey && <small>Salvando...</small>}
+        </button>)}
+      </div>}
+      <div style={{ marginTop: "auto", paddingTop: 16 }}>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>{treated} de {items.length} tratadas</p>
+        <button className={primaryButton} disabled={!finish} onClick={() => setLocation(`/analyses/${id}/success`)}>Concluir tratativa</button>
+      </div>
+    </div>
+  );
+}
+
+export function OccurrenceDetail() {
+  const { id, occurrenceKey } = useParams();
+  const [, setLocation] = useLocation();
+  const { audit, error, loading, setAudit } = useAudit(id);
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const decodedKey = decodeURIComponent(occurrenceKey || "");
+  const item = audit?.indicators?.occurrences?.find(x => x.occurrenceKey === decodedKey);
+  const save = async (status, explanation = "") => {
+    if (!item) return;
+    setBusy(true);
+    try {
+      await updateOccurrence(id, item.occurrenceKey, status, explanation);
+      const fresh = await getAudit(id); setAudit(fresh);
+      setLocation(`/analyses/${id}/occurrences`);
+    } catch (e) { window.alert(e.message); }
+    finally { setBusy(false); }
+  };
+  if (loading) return <div className="screen-no-nav">Carregando ocorrência...</div>;
+  if (error || !item) return <div className="screen-no-nav"><ErrorBox>{error || "Ocorrência não encontrada."}</ErrorBox></div>;
+  return (
+    <div className="screen-no-nav">
+      <BackHeader title={item.type} back={`/analyses/${id}/occurrences`} />
+      <h2 style={{ fontSize: 20, marginBottom: 4 }}>{item.name}</h2>
+      <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 16 }}>SKU {item.sku} · Prateleira {item.expectedPosition?.shelf}, posição {item.expectedPosition?.position}</p>
+      {audit.photos?.shelf && <img src={`${API_ORIGIN}${audit.photos.shelf}`} alt="Foto da gôndola analisada" style={{ width: "100%", maxHeight: 220, objectFit: "contain", borderRadius: 12, background: "#F1F5F9" }} />}
+      <div style={{ ...cardStyle, marginTop: 14 }}>
+        <strong>Evidência identificada</strong><p style={{ fontSize: 14, marginTop: 7 }}>{item.evidence}</p>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 8 }}>Confiança da análise: {(Number(item.confidence || 0) * 100).toFixed(0)}%</p>
+        {(item.type === "Preço" || item.type === "Preço ilegível" || item.type === "Etiqueta ausente") && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}><div><small>Etiqueta lida</small><strong style={{ display: "block", color: "var(--danger)" }}>{formatPrice(item.priceRead)}</strong></div><div><small>Preço cadastrado</small><strong style={{ display: "block", color: "var(--success)" }}>{formatPrice(item.expectedPrice)}</strong></div></div>}
+        {(item.type === "Posição" || item.type === "Ruptura") && <p style={{ fontSize: 13, marginTop: 8 }}>Posição observada: {item.observedPosition ? `prateleira ${item.observedPosition.shelf}, posição ${item.observedPosition.position}` : "não determinada"}</p>}
+      </div>
+      <div style={{ marginTop: "auto", display: "grid", gap: 10, paddingTop: 18 }}>
+        <button className={primaryButton} disabled={busy} onClick={() => save("Resolvida")}>Marcar como resolvido</button>
+        <label style={{ fontSize: 13, fontWeight: 600 }}>Não consegui resolver — motivo</label>
+        <select style={fieldStyle} value={reason} onChange={e => setReason(e.target.value)}><option value="">Selecione um motivo</option><option>Sem estoque no depósito</option><option>Produto descontinuado</option><option>Etiqueta indisponível</option><option>Outro</option></select>
+        {reason === "Outro" && <input style={fieldStyle} value={note} onChange={e => setNote(e.target.value)} placeholder="Descreva o motivo" />}
+        <button className="btn-outline" disabled={busy || !reason || (reason === "Outro" && !note.trim())} onClick={() => save("Justificada", reason === "Outro" ? note : reason)}>Registrar justificativa</button>
+        <button onClick={() => save("Contestada", note || "Funcionário sinalizou alerta incorreto")} style={{ border: 0, background: "none", color: "var(--danger)", padding: 10 }}>Este alerta está incorreto</button>
+      </div>
+    </div>
+  );
+}
+
+export function AnalysisSuccess() {
+  const { id } = useParams();
+  const [, setLocation] = useLocation();
+  const { audit, error, loading } = useAudit(id);
+  if (loading) return <div className="screen-no-nav">Carregando conclusão...</div>;
+  if (error) return <div className="screen-no-nav"><ErrorBox>{error}</ErrorBox></div>;
+  const all = audit.indicators.occurrences || [];
+  const done = all.filter(x => ["Resolvida", "Justificada", "Contestada"].includes(x.status)).length;
+  return <div className="screen-no-nav" style={{ textAlign: "center", justifyContent: "center" }}>
+    <div style={{ width: 76, height: 76, borderRadius: 50, background: "var(--success-bg)", color: "var(--success)", display: "grid", placeItems: "center", fontSize: 42, margin: "0 auto 18px" }}>✓</div>
+    <h1 style={{ fontSize: 24 }}>Tratativa registrada</h1>
+    <p style={{ color: "var(--text-muted)", marginTop: 6 }}>{audit.corridor} · Módulo {audit.module}</p>
+    <div style={{ ...cardStyle, display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: 24 }}><div><strong style={{ fontSize: 28 }}>{audit.indicators.IGE ?? "—"}</strong><p style={{ fontSize: 12, color: "var(--text-muted)" }}>IGE original</p></div><div><strong style={{ fontSize: 28 }}>{done}/{all.length}</strong><p style={{ fontSize: 12, color: "var(--text-muted)" }}>ocorrências tratadas</p></div></div>
+    <InfoBox>A nota exibida é a da auditoria original. Para comprovar as correções e atualizar os indicadores, faça uma nova auditoria com outra foto.</InfoBox>
+    <div style={{ display: "grid", gap: 10, marginTop: 28 }}><button className={primaryButton} onClick={() => setLocation("/analyses/new")}>Nova auditoria</button><button className="btn-outline" onClick={() => setLocation("/dashboard")}>Voltar ao início</button></div>
+  </div>;
+}
+
+export function History() {
+  const [, setLocation] = useLocation();
+  const [period, setPeriod] = useState(7);
+  const [audits, setAudits] = useState([]);
+  const [error, setError] = useState("");
+  useEffect(() => { getAudits().then(setAudits).catch(e => setError(e.message)); }, []);
+  const filtered = useMemo(() => audits.filter(a => Date.now() - new Date(a.createdAt).getTime() <= period * 86400000), [audits, period]);
+  const scores = filtered.map(a => a.indicators?.IGE).filter(v => v != null);
+  const average = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+  return <div className="screen">
+    <h1 style={{ fontSize: 25, fontWeight: 800, marginBottom: 16 }}>Histórico</h1>
+    <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>{[7, 30, 90].map(n => <button key={n} onClick={() => setPeriod(n)} style={{ border: period === n ? 0 : "1px solid var(--border)", background: period === n ? "var(--primary)" : "white", color: period === n ? "white" : "var(--text-main)", borderRadius: 20, padding: "8px 14px" }}> {n} dias </button>)}</div>
+    <div style={{ ...cardStyle, marginBottom: 18 }}><span style={{ color: "var(--text-muted)", fontSize: 13 }}>IGE médio do período</span><div style={{ fontSize: 34, fontWeight: 800 }}>{average ?? "—"}</div><small>{scores.length} auditoria(s) com IGE calculável</small></div>
+    {error && <ErrorBox>{error}</ErrorBox>}
+    {filtered.length === 0 ? <div style={cardStyle}>Ainda não há auditorias neste período.</div> : <div style={{ display: "grid", gap: 10 }}>{filtered.map(a => <button key={a.id} onClick={() => setLocation(`/analyses/${a.id}/result`)} style={{ ...cardStyle, textAlign: "left" }}><div style={{ display: "flex", justifyContent: "space-between" }}><strong>{a.corridor} · {a.module}</strong><strong>{a.indicators?.IGE ?? "—"}</strong></div><p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 5 }}>{dateTime(a.createdAt)} · {a.occurrenceCount} ocorrência(s)</p></button>)}</div>}
+    <BottomNav active="historico" />
+  </div>;
+}
+
+export function Profile() {
+  const [, setLocation] = useLocation();
+  const [health, setHealth] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => { getHealth().then(setHealth).catch(e => setError(e.message)); }, []);
+  return <div className="screen">
+    <h1 style={{ fontSize: 25, fontWeight: 800, marginBottom: 24 }}>Perfil</h1>
+    <div style={{ textAlign: "center", padding: 18, ...cardStyle }}><div style={{ width: 68, height: 68, borderRadius: 50, background: "var(--primary-light)", color: "var(--primary)", display: "grid", placeItems: "center", margin: "0 auto 10px", fontSize: 25, fontWeight: 800 }}>GF</div><strong>Funcionário · ambiente de demonstração</strong><p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 5 }}>Matrícula: {sessionStorage.getItem("gondola-demo-user") || "não informada"}</p></div>
+    <div style={{ marginTop: 20, ...cardStyle }}><strong>Status do serviço</strong><p style={{ marginTop: 8, fontSize: 14 }}>{health ? (health.aiConfigured ? "API conectada · IA configurada" : "API conectada · chave de IA não configurada") : error || "Verificando conexão..."}</p></div>
+    <InfoBox>As imagens enviadas são armazenadas no diretório local protegido do projeto. O prazo de retenção ainda precisa ser configurado com a loja e validado juridicamente.</InfoBox>
+    <div style={{ marginTop: "auto", display: "grid", gap: 10 }}><button className="btn-outline" onClick={() => setLocation("/dashboard")}>Voltar ao início</button><button className="btn-danger-outline" onClick={() => { sessionStorage.removeItem("gondola-demo-user"); setLocation("/"); }}>Sair</button></div>
+    <BottomNav active="perfil" />
+  </div>;
+}
+
+export function NotFound() {
+  const [, setLocation] = useLocation();
+  return <div className="screen-no-nav"><h1>Página não encontrada</h1><button className={primaryButton} onClick={() => setLocation("/dashboard")}>Voltar ao início</button></div>;
+}
