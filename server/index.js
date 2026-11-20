@@ -141,12 +141,12 @@ app.post(
 Você é um assistente de auditoria visual de gôndolas de supermercado.
 A primeira imagem é a foto real da gôndola. A segunda é a imagem de referência do planograma.
 Compare a foto com a lista estruturada de SKUs esperados abaixo.
-Não invente produtos, etiquetas, preços, faces ou posições.
+Não invente produtos, etiquetas, preços ou posições.
 Use exatamente um registro para cada SKU da lista.
 Estados:
 P = produto identificado na posição prevista;
 F = produto identificado fora da posição prevista;
-A = ausência visual confirmável, somente quando a posição/facing esperado estiver claramente vazio;
+A = ausência visual confirmável, somente quando a posição esperada estiver claramente vazia;
 I = indeterminado quando a foto não permitir concluir com segurança. Não transforme falta de evidência em ruptura.
 A confiança deve ser um número entre 0 e 1.
 Para preço, só leia etiquetas visíveis e legíveis. Nunca deduza valores.
@@ -201,7 +201,6 @@ Lista estruturada: ${JSON.stringify(planogramItems)}
           name: String(expected.name),
           brand: expected.brand || null,
           expectedPosition: { shelf: Number(expected.shelf), position: Number(expected.position) },
-          expectedFaces: Number(expected.faces || 1),
           expectedPrice: expected.price == null ? null : Number(expected.price),
           state,
           confidence,

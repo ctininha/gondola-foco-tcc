@@ -71,12 +71,6 @@ function parseMoney(value) {
   const number = Number(cleaned);
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
-function parseDateBR(value, endOfDay = false) {
-  if (!value) return null;
-  const match = String(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (!match) return null;
-  return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), ...(endOfDay ? [23, 59, 59, 999] : [0, 0, 0, 0]));
-}
 async function readText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -184,59 +178,101 @@ export function NewAnalysis() {
   const [reading, setReading] = useState(false);
 
   const importFiles = async () => {
-    setError(""); setWarnings([]); setItems([]); setReading(true);
+    setError("");
+    setWarnings([]);
+    setItems([]);
+    setReading(true);
+
     try {
       if (!planogramCsv) throw new Error("Selecione a planilha CSV do planograma.");
-      if (!corridor.trim() || !moduleName.trim()) throw new Error("Informe o corredor e o código do módulo.");
+      if (!corridor.trim() || !moduleName.trim()) {
+        throw new Error("Informe o corredor e o código do módulo.");
+      }
+
       const planRows = parseCsv(await readText(planogramCsv));
-      const allItems = planRows.map(row => {
-        const sku = pick(row, ["codigodebarras", "sku", "codigo", "ean"]);
+
+      const moduleItems = planRows.map(row => {
+        const sku = String(pick(row, ["codigodebarras", "sku", "codigo", "ean"])).trim();
         const name = pick(row, ["nome", "produto", "descricao"]);
-        const module = pick(row, ["modulo", "modulodagondola"]);
         const shelf = Number(pick(row, ["prateleira", "shelf"]));
         const position = Number(pick(row, ["posicao", "position"]));
-        const faces = Number(pick(row, ["faces"])) || 1;
-        if (!/^\d{8,14}$/.test(String(sku))) throw new Error(`Linha ${row.__line}: código de barras deve ter de 8 a 14 dígitos.`);
-        if (!name || !module || !Number.isInteger(shelf) || shelf < 1 || !Number.isInteger(position) || position < 1) throw new Error(`Linha ${row.__line}: confira módulo, prateleira, posição e nome.`);
-        return { sku: String(sku), name, module: String(module), shelf, position, faces };
+
+        if (!/^\d{8,14}$/.test(sku)) {
+          throw new Error(`Linha ${row.__line}: código de barras deve ter de 8 a 14 dígitos.`);
+        }
+
+        if (!name || !Number.isInteger(shelf) || shelf < 1 ||
+            !Number.isInteger(position) || position < 1) {
+          throw new Error(`Linha ${row.__line}: confira prateleira, posição e nome.`);
+        }
+
+        return { sku, name, shelf, position, price: null };
       });
-      const moduleItems = allItems.filter(x => x.module.toLowerCase() === moduleName.trim().replace(/^m[oó]dulo\s*/i, "").toLowerCase());
-      if (!moduleItems.length) throw new Error(`Não encontrei itens para o módulo "${moduleName}" na planilha.`);
-      const duplicatePositions = new Set();
-      for (const item of moduleItems) {
-        const key = `${item.shelf}:${item.position}`;
-        if (duplicatePositions.has(key)) throw new Error(`Há mais de um SKU na prateleira ${item.shelf}, posição ${item.position}.`);
-        duplicatePositions.add(key);
+
+      if (!moduleItems.length) {
+        throw new Error("O planograma não contém produtos.");
       }
+
+      const seenSkus = new Set();
+      const seenPositions = new Set();
+
+      for (const item of moduleItems) {
+        if (seenSkus.has(item.sku)) {
+          throw new Error(`SKU duplicado no planograma: ${item.sku}.`);
+        }
+        seenSkus.add(item.sku);
+
+        const key = `${item.shelf}:${item.position}`;
+        if (seenPositions.has(key)) {
+          throw new Error(`Há mais de um SKU na prateleira ${item.shelf}, posição ${item.position}.`);
+        }
+        seenPositions.add(key);
+      }
+
       const warningList = [];
       let merged = moduleItems;
+
       if (pricesCsv) {
         const priceRows = parseCsv(await readText(pricesCsv));
-        const now = new Date();
-        const activePrices = new Map();
+        const prices = new Map();
+
         for (const row of priceRows) {
-          const sku = String(pick(row, ["codigodebarras", "sku", "codigo", "ean"]));
+          const sku = String(pick(row, ["codigodebarras", "sku", "codigo", "ean"])).trim();
           const price = parseMoney(pick(row, ["preco", "valor"]));
-          const start = parseDateBR(pick(row, ["vigenciainicio", "inicio"]));
-          const endValue = pick(row, ["vigenciafim", "fim"]);
-          const end = endValue ? parseDateBR(endValue, true) : null;
-          if (!/^\d{8,14}$/.test(sku) || price == null || !start || (endValue && !end)) throw new Error(`Linha ${row.__line} da tabela de preços: confira SKU, preço e vigência (dd/mm/aaaa).`);
-          if (start <= now && (!end || end >= now)) {
-            if (activePrices.has(sku)) throw new Error(`Há mais de um preço vigente para o SKU ${sku}.`);
-            activePrices.set(sku, price);
+
+          if (!/^\d{8,14}$/.test(sku) || price == null) {
+            throw new Error(`Linha ${row.__line} da tabela de preços: confira código de barras e preço.`);
           }
+
+          if (prices.has(sku)) {
+            throw new Error(`Há mais de um preço cadastrado para o SKU ${sku}.`);
+          }
+
+          prices.set(sku, price);
         }
-        merged = moduleItems.map(item => ({ ...item, price: activePrices.has(item.sku) ? activePrices.get(item.sku) : null }));
-        const withoutPrice = merged.filter(x => x.price == null).length;
-        if (withoutPrice) warningList.push(`${withoutPrice} SKU(s) não têm preço vigente cadastrado; não serão avaliados no IDP.`);
+
+        merged = moduleItems.map(item => ({
+          ...item,
+          price: prices.has(item.sku) ? prices.get(item.sku) : null
+        }));
+
+        const withoutPrice = merged.filter(item => item.price == null).length;
+
+        if (withoutPrice) {
+          warningList.push(`${withoutPrice} SKU(s) não têm preço cadastrado; não serão avaliados no IDP.`);
+        }
       } else {
         merged = moduleItems.map(item => ({ ...item, price: null }));
         warningList.push("Tabela de preços não enviada: o IDP não poderá ser calculado nesta auditoria.");
       }
+
       setItems(merged);
       setWarnings(warningList);
-    } catch (e) { setError(e.message); }
-    finally { setReading(false); }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setReading(false);
+    }
   };
 
   const continueToCapture = () => {
@@ -251,11 +287,11 @@ export function NewAnalysis() {
       <BackHeader title="Nova auditoria" />
       <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 16 }}>Selecione o módulo e carregue os arquivos de referência usados na comparação.</p>
       <label style={{ fontSize: 14, fontWeight: 600 }}>Corredor<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} value={corridor} onChange={e => setCorridor(e.target.value)} placeholder="Ex.: Corredor 4 · Laticínios" /></label>
-      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>Módulo (código da coluna Módulo)<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="Ex.: B" /></label>
+      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>Módulo (código do módulo)<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="Ex.: B" /></label>
       <label style={{ fontSize: 14, fontWeight: 600, marginTop: 16 }}>1. Planograma em CSV<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept=".csv,text/csv" onChange={e => { setPlanogramCsv(e.target.files?.[0] || null); setItems([]); }} /></label>
       <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>2. Tabela de preços em CSV (recomendado)<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept=".csv,text/csv" onChange={e => { setPricesCsv(e.target.files?.[0] || null); setItems([]); }} /></label>
       <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>3. Imagem do planograma<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept="image/jpeg,image/png,image/webp" onChange={e => setPlanogramImage(e.target.files?.[0] || null)} /></label>
-      <InfoBox>O CSV do planograma deve conter: Módulo, Prateleira, Posição, Código de barras, Nome, Marca e Faces. A tabela de preços deve conter: Código de barras, Preço, Vigência início e Vigência fim (opcional). Os arquivos abaixo são exemplos fictícios do Anexo A.</InfoBox>
+      <InfoBox>O CSV do planograma deve conter: Prateleira, Posição, Código de barras e Nome. A tabela de preços deve conter: Código de barras e Preço. O módulo é informado separadamente nesta tela.</InfoBox>
       <div style={{ display: "flex", gap: 12, fontSize: 13, marginBottom: 8 }}><a href="/modelos/planograma-exemplo.csv" download>Baixar modelo de planograma</a><a href="/modelos/precos-exemplo.csv" download>Baixar modelo de preços</a></div>
       {error && <ErrorBox>{error}</ErrorBox>}
       {warnings.map(w => <div key={w} style={{ color: "var(--warning-text)", fontSize: 13, marginBottom: 6 }}>⚠ {w}</div>)}
