@@ -1,5 +1,5 @@
 import Router from "./Router";
-import { AuditProvider } from "./context/AuditContext";
+import { AuditProvider } from "./context/AuditContext.jsx";
 
 function App() {
   return (

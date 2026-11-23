@@ -1,25 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useParams } from "wouter";
-import { useAuditDraft } from "../context/AuditContext";
+import { useAuditDraft } from "../context/useAuditDraft";
 import { createAudit, getAudit, getAudits, getHealth, updateOccurrence } from "../services/auditApi";
+import { BottomNav } from "../components/SharedUI";
 
 const primaryButton = "btn-primary";
 const API_ORIGIN = import.meta.env.VITE_API_URL || "http://localhost:3001";
 const fieldStyle = { width: "100%", minHeight: 48, border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px", fontSize: 15, background: "white" };
 const cardStyle = { border: "1px solid var(--border)", borderRadius: 14, padding: 14, background: "white" };
 
-function BottomNav({ active }) {
-  const [, setLocation] = useLocation();
-  return (
-    <nav className="bottom-nav">
-      {[["inicio", "Início", "/dashboard", "⌂"], ["historico", "Histórico", "/history", "◷"], ["perfil", "Perfil", "/profile", "○"]].map(([id, label, path, icon]) => (
-        <button key={id} className={`nav-item ${active === id ? "active" : ""}`} onClick={() => setLocation(path)}>
-          <span style={{ fontSize: 21 }}>{icon}</span><span>{label}</span>
-        </button>
-      ))}
-    </nav>
-  );
-}
 
 function BackHeader({ title, back = "/dashboard", dark = false }) {
   const [, setLocation] = useLocation();
@@ -135,7 +124,7 @@ export function Dashboard() {
     getAudits().then(data => { if (active) setAudits(data); }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
-  const today = new Date().toLocaleDateString("pt-BR");
+  const [today] = useState(() => new Date().toLocaleDateString("pt-BR"));
   const todays = audits.filter(a => new Date(a.createdAt).toLocaleDateString("pt-BR") === today);
   return (
     <div className="screen">
@@ -171,7 +160,6 @@ export function NewAnalysis() {
   const [moduleName, setModuleName] = useState("");
   const [planogramCsv, setPlanogramCsv] = useState(null);
   const [pricesCsv, setPricesCsv] = useState(null);
-  const [planogramImage, setPlanogramImage] = useState(null);
   const [items, setItems] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [error, setError] = useState("");
@@ -248,12 +236,18 @@ export function NewAnalysis() {
             throw new Error(`Há mais de um preço cadastrado para o SKU ${sku}.`);
           }
 
-          prices.set(sku, price);
+          const rawStock = pick(row, ["quantidadeestoque", "estoque", "saldoestoque"]);
+          const stock = rawStock === "" ? null : Number(String(rawStock).trim());
+          if (rawStock !== "" && (!/^\d+$/.test(String(rawStock).trim()) || !Number.isSafeInteger(stock))) {
+            throw new Error(`Linha ${row.__line} da tabela de preços: estoque deve ser inteiro não negativo ou ficar em branco.`);
+          }
+          prices.set(sku, { price, stock });
         }
 
         merged = moduleItems.map(item => ({
           ...item,
-          price: prices.has(item.sku) ? prices.get(item.sku) : null
+          price: prices.has(item.sku) ? prices.get(item.sku).price : null,
+          stockQuantity: prices.has(item.sku) ? prices.get(item.sku).stock : null
         }));
 
         const withoutPrice = merged.filter(item => item.price == null).length;
@@ -262,7 +256,7 @@ export function NewAnalysis() {
           warningList.push(`${withoutPrice} SKU(s) não têm preço cadastrado; não serão avaliados no IDP.`);
         }
       } else {
-        merged = moduleItems.map(item => ({ ...item, price: null }));
+        merged = moduleItems.map(item => ({ ...item, price: null, stockQuantity: null }));
         warningList.push("Tabela de preços não enviada: o IDP não poderá ser calculado nesta auditoria.");
       }
 
@@ -277,8 +271,7 @@ export function NewAnalysis() {
 
   const continueToCapture = () => {
     if (!items.length) { setError("Importe e valide o planograma antes de continuar."); return; }
-    if (!planogramImage) { setError("Selecione também a imagem de referência do planograma."); return; }
-    setDraft({ corridor: corridor.trim(), moduleName: moduleName.trim(), planogramName: planogramCsv?.name || "Planograma importado", planogramItems: items, planogramFile: planogramImage, shelfPhoto: null });
+    setDraft({ corridor: corridor.trim(), moduleName: moduleName.trim(), planogramName: planogramCsv?.name || "Planograma importado", planogramItems: items, shelfPhoto: null });
     setLocation("/analyses/camera");
   };
 
@@ -289,15 +282,14 @@ export function NewAnalysis() {
       <label style={{ fontSize: 14, fontWeight: 600 }}>Corredor<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} value={corridor} onChange={e => setCorridor(e.target.value)} placeholder="Ex.: Corredor 4 · Laticínios" /></label>
       <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>Módulo (código do módulo)<input style={{ ...fieldStyle, display: "block", marginTop: 6 }} value={moduleName} onChange={e => setModuleName(e.target.value)} placeholder="Ex.: B" /></label>
       <label style={{ fontSize: 14, fontWeight: 600, marginTop: 16 }}>1. Planograma em CSV<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept=".csv,text/csv" onChange={e => { setPlanogramCsv(e.target.files?.[0] || null); setItems([]); }} /></label>
-      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>2. Tabela de preços em CSV (recomendado)<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept=".csv,text/csv" onChange={e => { setPricesCsv(e.target.files?.[0] || null); setItems([]); }} /></label>
-      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>3. Imagem do planograma<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept="image/jpeg,image/png,image/webp" onChange={e => setPlanogramImage(e.target.files?.[0] || null)} /></label>
+      <label style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>2. Tabela de preços e estoque em CSV (recomendado; estoque opcional)<input style={{ ...fieldStyle, display: "block", marginTop: 6, padding: 9 }} type="file" accept=".csv,text/csv" onChange={e => { setPricesCsv(e.target.files?.[0] || null); setItems([]); }} /></label>
       <InfoBox>O CSV do planograma deve conter: Prateleira, Posição, Código de barras e Nome. A tabela de preços deve conter: Código de barras e Preço. O módulo é informado separadamente nesta tela.</InfoBox>
-      <div style={{ display: "flex", gap: 12, fontSize: 13, marginBottom: 8 }}><a href="/modelos/planograma-exemplo.csv" download>Baixar modelo de planograma</a><a href="/modelos/precos-exemplo.csv" download>Baixar modelo de preços</a></div>
+      <div style={{ display: "flex", gap: 12, fontSize: 13, marginBottom: 8 }}><a href="/modelos/planograma-exemplo.csv" download>Baixar modelo de planograma</a><a href="/modelos/precos-exemplo.csv" download>Baixar modelo de preços e estoque</a></div>
       {error && <ErrorBox>{error}</ErrorBox>}
       {warnings.map(w => <div key={w} style={{ color: "var(--warning-text)", fontSize: 13, marginBottom: 6 }}>⚠ {w}</div>)}
       <button className="btn-outline" style={{ marginTop: 10 }} disabled={reading} onClick={importFiles}>{reading ? "Validando planilhas..." : "Validar planilhas"}</button>
       {items.length > 0 && <div style={{ ...cardStyle, marginTop: 12 }}><strong>{items.length} SKU(s) carregados para o módulo {moduleName}</strong><p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 4 }}>Nenhum indicador será calculado com produtos fora desta lista.</p></div>}
-      <div style={{ marginTop: "auto", paddingTop: 18 }}><button className={primaryButton} disabled={!items.length || !planogramImage} onClick={continueToCapture}>Continuar para captura</button></div>
+      <div style={{ marginTop: "auto", paddingTop: 18 }}><button className={primaryButton} disabled={!items.length} onClick={continueToCapture}>Continuar para captura</button></div>
     </div>
   );
 }
@@ -305,17 +297,19 @@ export function NewAnalysis() {
 export function GuidedCamera() {
   const [, setLocation] = useLocation();
   const { draft, setDraft } = useAuditDraft();
-  const [preview, setPreview] = useState("");
+  const preview = useMemo(() => {
+  if (!draft.shelfPhoto) return "";
+  return URL.createObjectURL(draft.shelfPhoto);
+}, [draft.shelfPhoto]);
   const [error, setError] = useState("");
   useEffect(() => {
     if (!draft.planogramItems.length) setLocation("/analyses/new");
   }, [draft.planogramItems.length, setLocation]);
   useEffect(() => {
-    if (!draft.shelfPhoto) { setPreview(""); return; }
-    const url = URL.createObjectURL(draft.shelfPhoto);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [draft.shelfPhoto]);
+  return () => {
+    if (preview) URL.revokeObjectURL(preview);
+  };
+}, [preview]);
   const selectPhoto = file => {
     setError("");
     if (!file) return;
@@ -348,13 +342,19 @@ export function GuidedCamera() {
 export function ReviewPhoto() {
   const [, setLocation] = useLocation();
   const { draft } = useAuditDraft();
-  const [photoUrl, setPhotoUrl] = useState("");
+  const photoUrl = useMemo(() => {
+  if (!draft.shelfPhoto) return "";
+  return URL.createObjectURL(draft.shelfPhoto);
+}, [draft.shelfPhoto]);
   useEffect(() => {
-    if (!draft.shelfPhoto) { setLocation("/analyses/camera"); return; }
-    const url = URL.createObjectURL(draft.shelfPhoto);
-    setPhotoUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [draft.shelfPhoto, setLocation]);
+  if (!draft.shelfPhoto) setLocation("/analyses/camera");
+}, [draft.shelfPhoto, setLocation]);
+
+useEffect(() => {
+  return () => {
+    if (photoUrl) URL.revokeObjectURL(photoUrl);
+  };
+}, [photoUrl]);
   return (
     <div className="screen-no-nav">
       <BackHeader title="Revisar foto" back="/analyses/camera" />
@@ -379,12 +379,11 @@ export function AnalyzingProcess() {
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   useEffect(() => {
-    if (!draft.shelfPhoto || !draft.planogramFile || !draft.planogramItems.length) { setLocation("/analyses/new"); return; }
+    if (!draft.shelfPhoto || !draft.planogramItems.length) { setLocation("/analyses/new"); return; }
     let alive = true;
     const timers = [setTimeout(() => alive && setStep(2), 700), setTimeout(() => alive && setStep(3), 1800)];
     createAudit({
       shelfPhoto: draft.shelfPhoto,
-      planogramPhoto: draft.planogramFile,
       planogramItems: draft.planogramItems,
       corridor: draft.corridor,
       moduleName: draft.moduleName,
@@ -429,14 +428,43 @@ export function AnalysisResult() {
   if (error) return <div className="screen-no-nav"><ErrorBox>{error}</ErrorBox><button className="btn-outline" onClick={() => setLocation("/dashboard")}>Voltar ao início</button></div>;
   const metrics = audit.indicators;
   const occurrenceCount = metrics.occurrences.length;
+  const igeValue = metrics.IGE == null
+    ? null
+    : Math.max(0, Math.min(100, Number(metrics.IGE)));
   return (
     <div className="screen-no-nav">
       <BackHeader title="Resultado" />
       <p style={{ color: "var(--text-muted)", fontSize: 13 }}>{audit.corridor} · Módulo {audit.module} · {dateTime(audit.createdAt)}</p>
       {audit.planogramName && <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>Referência: {audit.planogramName}</p>}
       <div style={{ display: "grid", placeItems: "center", padding: "22px 0" }}>
-        <div style={{ width: 150, height: 150, border: "12px solid var(--primary-light)", borderTopColor: "var(--primary)", borderRadius: "50%", display: "grid", placeContent: "center", textAlign: "center" }}>
-          <strong style={{ fontSize: 44 }}>{metrics.IGE ?? "—"}</strong><span style={{ fontSize: 12, color: "var(--text-muted)" }}>de 100</span>
+        <div
+          style={{
+            width: 150,
+            height: 150,
+            padding: 12,
+            boxSizing: "border-box",
+            borderRadius: "50%",
+            background: igeValue == null
+              ? "var(--primary-light)"
+              : `conic-gradient(from -90deg, var(--primary) ${igeValue}%, var(--primary-light) ${igeValue}%)`,
+            display: "grid",
+            placeItems: "center",
+          }}
+        >
+          <div style={{
+            width: "100%",
+            height: "100%",
+            borderRadius: "50%",
+            background: "white",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            textAlign: "center",
+          }}>
+            <strong style={{ fontSize: 44 }}>{igeValue == null ? "—" : igeValue}</strong>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>de 100</span>
+          </div>
         </div>
         <strong style={{ marginTop: 12 }}>Índice geral de execução</strong>
         <span className="badge badge-neutral" style={{ marginTop: 6 }}>{metrics.classification}</span>
@@ -466,35 +494,55 @@ export function AnalysisResult() {
 export function OccurrencesList() {
   const { id } = useParams();
   const [, setLocation] = useLocation();
-  const { audit, error, loading, setAudit } = useAudit(id);
+  const { audit, error, loading } = useAudit(id);
   const [filter, setFilter] = useState("Todas");
-  const [saving, setSaving] = useState("");
   const items = audit?.indicators?.occurrences || [];
   const visible = items.filter(item => item.status !== "Contestada" && (filter === "Todas" || item.type === filter));
   const treated = items.filter(item => ["Resolvida", "Justificada", "Contestada"].includes(item.status)).length;
   const finish = items.every(item => ["Resolvida", "Justificada", "Contestada"].includes(item.status));
-  const changeStatus = async (item, status, note = "") => {
-    setSaving(item.occurrenceKey);
-    try {
-      await updateOccurrence(id, item.occurrenceKey, status, note);
-      const updated = await getAudit(id); setAudit(updated);
-    } catch (e) { window.alert(e.message); }
-    finally { setSaving(""); }
-  };
   if (loading) return <div className="screen-no-nav">Carregando ocorrências...</div>;
   if (error) return <div className="screen-no-nav"><ErrorBox>{error}</ErrorBox></div>;
   return (
     <div className="screen-no-nav">
       <BackHeader title="Ocorrências" back={`/analyses/${id}/result`} />
-      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 12 }}>
-        {["Todas", "Ruptura", "Preço", "Posição", "Preço ilegível", "Etiqueta ausente"].map(type => <button key={type} onClick={() => setFilter(type)} style={{ border: filter === type ? 0 : "1px solid var(--border)", background: filter === type ? "var(--primary)" : "white", color: filter === type ? "white" : "var(--text-main)", borderRadius: 20, padding: "8px 12px", whiteSpace: "nowrap" }}>{type} {type === "Todas" ? items.filter(x => x.status !== "Contestada").length : items.filter(x => x.type === type && x.status !== "Contestada").length}</button>)}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+        gap: 8,
+        paddingBottom: 12,
+        width: "100%",
+        boxSizing: "border-box",
+      }}>
+        {["Todas", "Ruptura", "Preço", "Posição", "Preço ilegível", "Etiqueta ausente"].map(type => (
+          <button
+            key={type}
+            onClick={() => setFilter(type)}
+            style={{
+              border: filter === type ? 0 : "1px solid var(--border)",
+              background: filter === type ? "var(--primary)" : "white",
+              color: filter === type ? "white" : "var(--text-main)",
+              borderRadius: 20,
+              padding: "9px 10px",
+              minWidth: 0,
+              minHeight: 40,
+              width: "100%",
+              whiteSpace: "normal",
+              overflowWrap: "anywhere",
+              lineHeight: 1.2,
+              textAlign: "center",
+            }}
+          >
+            {type} {type === "Todas"
+              ? items.filter(x => x.status !== "Contestada").length
+              : items.filter(x => x.type === type && x.status !== "Contestada").length}
+          </button>
+        ))}
       </div>
       {visible.length === 0 ? <div style={cardStyle}>Nenhuma ocorrência neste filtro.</div> : <div style={{ display: "grid", gap: 10, overflowY: "auto" }}>
         {visible.map(item => <button key={item.occurrenceKey} onClick={() => setLocation(`/analyses/${id}/occurrences/${encodeURIComponent(item.occurrenceKey)}`)} style={{ ...cardStyle, textAlign: "left", cursor: "pointer" }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><strong>{item.name}</strong>{statusBadge(item.status)}</div>
           <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 5 }}>SKU {item.sku} · {item.type}</div>
           <div style={{ fontSize: 13, marginTop: 6 }}>{item.evidence}</div>
-          {saving === item.occurrenceKey && <small>Salvando...</small>}
         </button>)}
       </div>}
       <div style={{ marginTop: "auto", paddingTop: 16 }}>
@@ -574,7 +622,8 @@ export function History() {
   const [audits, setAudits] = useState([]);
   const [error, setError] = useState("");
   useEffect(() => { getAudits().then(setAudits).catch(e => setError(e.message)); }, []);
-  const filtered = useMemo(() => audits.filter(a => Date.now() - new Date(a.createdAt).getTime() <= period * 86400000), [audits, period]);
+  const [now] = useState(() => Date.now());
+  const filtered = useMemo(() => audits.filter(a => now - new Date(a.createdAt).getTime() <= period * 86400000), [audits, period, now]);
   const scores = filtered.map(a => a.indicators?.IGE).filter(v => v != null);
   const average = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
   return <div className="screen">

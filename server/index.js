@@ -54,7 +54,7 @@ const upload = multer({
 });
 
 const ai = process.env.GEMINI_API_KEY
-  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 90000 } })
   : null;
 
 function filePart(file) {
@@ -99,17 +99,13 @@ app.get("/api/health", (_req, res) => {
 
 app.post(
   "/api/audits",
-  upload.fields([
-    { name: "shelfPhoto", maxCount: 1 },
-    { name: "planogramPhoto", maxCount: 1 },
-  ]),
+  upload.fields([{ name: "shelfPhoto", maxCount: 1 }]),
   async (req, res) => {
     const shelf = req.files?.shelfPhoto?.[0];
-    const planogram = req.files?.planogramPhoto?.[0];
 
     try {
-      if (!shelf || !planogram) {
-        return res.status(400).json({ error: "Envie a foto da gôndola e a imagem do planograma." });
+      if (!shelf) {
+        return res.status(400).json({ error: "Envie a foto da gôndola." });
       }
       if (!ai) {
         return res.status(503).json({ error: "IA não configurada. Defina GEMINI_API_KEY no arquivo .env e reinicie a API." });
@@ -133,13 +129,17 @@ app.post(
             Number(item.shelf) < 1 || !Number.isInteger(Number(item.position)) || Number(item.position) < 1) {
           return res.status(400).json({ error: "Cada item precisa de código de barras (8 a 14 dígitos), nome, prateleira e posição válidos." });
         }
+        if (item.stockQuantity !== null && item.stockQuantity !== undefined &&
+            (!Number.isSafeInteger(item.stockQuantity) || item.stockQuantity < 0)) {
+          return res.status(400).json({ error: `Saldo inválido para SKU ${sku}.` });
+        }
         if (seenSkus.has(sku)) return res.status(400).json({ error: `SKU duplicado no planograma: ${sku}.` });
         seenSkus.add(sku);
       }
 
       const prompt = `
 Você é um assistente de auditoria visual de gôndolas de supermercado.
-A primeira imagem é a foto real da gôndola. A segunda é a imagem de referência do planograma.
+A imagem enviada é a foto real da gôndola. Use a lista estruturada de SKUs como referência do planograma.
 Compare a foto com a lista estruturada de SKUs esperados abaixo.
 Não invente produtos, etiquetas, preços ou posições.
 Use exatamente um registro para cada SKU da lista.
@@ -163,10 +163,50 @@ Retorne somente JSON neste formato:
 Lista estruturada: ${JSON.stringify(planogramItems)}
       `.trim();
 
-      const response = await ai.models.generateContent({
-        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
-        contents: [prompt, filePart(shelf), filePart(planogram)],
-      });
+      let response;
+      for (let attempt = 1; attempt <= 1; attempt += 1) {
+        try {
+          response = await ai.models.generateContent({
+            model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+            contents: [prompt, filePart(shelf)],
+            config: {
+              thinkingConfig: {
+                thinkingLevel: "low",
+              },
+            },
+          });
+          break;
+        } catch (error) {
+          console.error("Erro original do Gemini:", {
+            name: error?.name,
+            status: error?.status,
+            code: error?.code,
+            message: error?.message,
+          });
+          const details = [
+            error?.status,
+            error?.code,
+            error?.message,
+            error?.response?.status,
+          ].filter(Boolean).join(" ");
+
+          const temporary = /\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|DEADLINE_EXCEEDED/i.test(details);
+
+          if (!temporary) throw error;
+
+          if (attempt === 1) {
+            throw new Error(
+              "O Gemini não conseguiu concluir a análise no tempo esperado. Tente novamente mais tarde."
+            );
+          }
+
+          const waitMs = 1500 * attempt;
+          console.warn(
+            `Gemini temporariamente indisponível. Tentativa ${attempt}/3. Nova tentativa em ${waitMs} ms.`
+          );
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+        }
+      }
       const parsed = parseJson(response.text);
       if (!Array.isArray(parsed.items)) throw new Error("Resposta da IA sem lista de itens.");
 
@@ -202,6 +242,9 @@ Lista estruturada: ${JSON.stringify(planogramItems)}
           brand: expected.brand || null,
           expectedPosition: { shelf: Number(expected.shelf), position: Number(expected.position) },
           expectedPrice: expected.price == null ? null : Number(expected.price),
+          // Snapshot do saldo informado no CSV, não inferido da fotografia ou da IA.
+          stockQuantity: Number.isSafeInteger(expected.stockQuantity) && expected.stockQuantity >= 0
+            ? expected.stockQuantity : null,
           state,
           confidence,
           observedPosition: found?.observedPosition && Number.isFinite(Number(found.observedPosition.shelf)) && Number.isFinite(Number(found.observedPosition.position))
@@ -218,11 +261,8 @@ Lista estruturada: ${JSON.stringify(planogramItems)}
       const id = crypto.randomUUID();
       const createdAt = new Date().toISOString();
       const shelfName = `${id}-shelf${path.extname(shelf.originalname).toLowerCase() || ".jpg"}`;
-      const planogramName = `${id}-planogram${path.extname(planogram.originalname).toLowerCase() || ".jpg"}`;
       const shelfPath = path.join(uploadDir, shelfName);
-      const planogramPath = path.join(uploadDir, planogramName);
       fs.renameSync(shelf.path, shelfPath);
-      fs.renameSync(planogram.path, planogramPath);
 
       const result = {
         id,
@@ -235,7 +275,7 @@ Lista estruturada: ${JSON.stringify(planogramItems)}
         manualReviewNotes: Array.isArray(parsed.manualReviewNotes) ? parsed.manualReviewNotes.map(String) : [],
         items,
         indicators,
-        photos: { shelf: `/uploads/${shelfName}`, planogram: `/uploads/${planogramName}` },
+        photos: { shelf: `/uploads/${shelfName}`, planogram: null },
       };
 
       db.prepare(`
@@ -244,7 +284,7 @@ Lista estruturada: ${JSON.stringify(planogramItems)}
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id, createdAt, result.corridor, result.module, result.planogramName,
-        "processed", JSON.stringify(result), result.photos.shelf, result.photos.planogram,
+        "processed", JSON.stringify(result), result.photos.shelf, "",
       );
 
       return res.status(201).json(result);
@@ -254,7 +294,7 @@ Lista estruturada: ${JSON.stringify(planogramItems)}
         error: error.message || "Não foi possível concluir a análise com IA. Nenhum resultado fictício foi criado.",
       });
     } finally {
-      for (const file of [shelf, planogram]) {
+      for (const file of [shelf]) {
         if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
       }
     }

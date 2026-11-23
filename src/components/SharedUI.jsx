@@ -1,26 +1,67 @@
 import { useLocation } from "wouter";
 import { PLANOGRAMA_EXEMPLO } from "../data/mockData";
 
+
 export function BottomNav({ active }) {
   const [, setLocation] = useLocation();
 
+  const items = [
+    {
+      id: "inicio",
+      label: "Início",
+      path: "/dashboard",
+      icon: (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m3 10 9-7 9 7" />
+          <path d="M5 9v11h14V9" />
+          <path d="M9 20v-7h6v7" />
+        </svg>
+      ),
+    },
+    {
+      id: "historico",
+      label: "Histórico",
+      path: "/history",
+      icon: (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+          <path d="M3 4v5h5" />
+        </svg>
+      ),
+    },
+    {
+      id: "perfil",
+      label: "Perfil",
+      path: "/profile",
+      icon: (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 21a8 8 0 0 1 16 0" />
+        </svg>
+      ),
+    },
+  ];
+
   return (
-    <nav className="bottom-nav">
-      <button className={`nav-item ${active === "inicio" ? "active" : ""}`} onClick={() => setLocation("/")}>
-        <span style={{ fontSize: "20px" }}>🏠</span>
-        <span>Início</span>
-      </button>
-      <button className={`nav-item ${active === "historico" ? "active" : ""}`} onClick={() => setLocation("/history")}>
-        <span style={{ fontSize: "20px" }}>🕒</span>
-        <span>Histórico</span>
-      </button>
-      <button className={`nav-item ${active === "perfil" ? "active" : ""}`} onClick={() => setLocation("/profile")}>
-        <span style={{ fontSize: "20px" }}>👤</span>
-        <span>Perfil</span>
-      </button>
+    <nav className="bottom-nav" aria-label="Navegação principal">
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          aria-label={item.label}
+          aria-current={active === item.id ? "page" : undefined}
+          className={`nav-item ${active === item.id ? "active" : ""}`}
+          onClick={() => setLocation(item.path)}
+        >
+          <span className="nav-icon">{item.icon}</span>
+          <span>{item.label}</span>
+        </button>
+      ))}
     </nav>
   );
 }
+
 
 export function PlanogramaVisual({ height = 160 }) {
   return (

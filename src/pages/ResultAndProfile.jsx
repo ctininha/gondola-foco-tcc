@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocation, useParams } from "wouter";
-import { OCORRENCIAS_EXEMPLO, HISTORICO_SEMANA, USER_DATA } from "../data/mockData";
+import { HISTORICO_SEMANA, USER_DATA } from "../data/mockData";
 import { BottomNav } from "../components/SharedUI";
 
 // T07 · Resultado

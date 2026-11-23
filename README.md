@@ -15,7 +15,7 @@ Aplicativo web responsivo para auditoria visual de gôndolas, com análise de fo
 
 ```env
 GEMINI_API_KEY=SUA_CHAVE_PRIVADA
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.8-flash
 API_PORT=3001
 APP_ORIGIN=http://localhost:5173
 VITE_API_URL=http://localhost:3001
