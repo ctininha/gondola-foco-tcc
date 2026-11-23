@@ -7,7 +7,7 @@ export function calculateIndicators(items) {
 
   // Q inclui preços legíveis iguais e divergentes; ambos são avaliáveis.
   const priceEvaluable = items.filter(item =>
-    ["EVALUABLE", "DIVERGENT"].includes(item.priceStatus)
+    ["P", "F"].includes(item.state) && ["EVALUABLE", "DIVERGENT"].includes(item.priceStatus)
   );
   const Q = priceEvaluable.length;
   const D = priceEvaluable.filter(item => item.priceStatus === "DIVERGENT").length;
@@ -32,9 +32,7 @@ export function calculateIndicators(items) {
     });
     if (item.state === "A") add("Ruptura");
     if (item.state === "F") add("Posição");
-    if (item.priceStatus === "DIVERGENT") add("Preço");
-    if (item.priceStatus === "ILLEGIBLE") add("Preço ilegível", "Revisão manual");
-    if (item.priceStatus === "MISSING") add("Etiqueta ausente", "Revisão manual");
+    if (["P", "F"].includes(item.state) && item.priceStatus === "DIVERGENT") add("Preço");
   }
 
   const classification = IGE == null

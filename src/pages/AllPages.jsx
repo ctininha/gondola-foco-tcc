@@ -513,7 +513,7 @@ export function OccurrencesList() {
         width: "100%",
         boxSizing: "border-box",
       }}>
-        {["Todas", "Ruptura", "Preço", "Posição", "Preço ilegível", "Etiqueta ausente"].map(type => (
+        {["Todas", "Ruptura", "Preço", "Posição"].map(type => (
           <button
             key={type}
             onClick={() => setFilter(type)}
@@ -583,7 +583,7 @@ export function OccurrenceDetail() {
       <div style={{ ...cardStyle, marginTop: 14 }}>
         <strong>Evidência identificada</strong><p style={{ fontSize: 14, marginTop: 7 }}>{item.evidence}</p>
         <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 8 }}>Confiança da análise: {(Number(item.confidence || 0) * 100).toFixed(0)}%</p>
-        {(item.type === "Preço" || item.type === "Preço ilegível" || item.type === "Etiqueta ausente") && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}><div><small>Etiqueta lida</small><strong style={{ display: "block", color: "var(--danger)" }}>{formatPrice(item.priceRead)}</strong></div><div><small>Preço cadastrado</small><strong style={{ display: "block", color: "var(--success)" }}>{formatPrice(item.expectedPrice)}</strong></div></div>}
+        {(item.type === "Preço") && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}><div><small>Preço na gôndola</small><strong style={{ display: "block", color: "var(--danger)" }}>{formatPrice(item.priceRead)}</strong></div><div><small>Preço do sistema</small><strong style={{ display: "block", color: "var(--success)" }}>{formatPrice(item.expectedPrice)}</strong></div><div style={{ gridColumn: "1 / -1", fontSize: 13 }}><strong>Diferença por unidade: {formatPrice(Math.abs(Number(item.priceRead) - Number(item.expectedPrice)))}</strong><p>{Number(item.priceRead) > Number(item.expectedPrice) ? "Preço anunciado acima do sistema: pode desestimular a compra. Conferir e corrigir." : "Preço anunciado abaixo do sistema: pode gerar divergência no caixa. Conferir e corrigir."}</p></div></div>}
         {(item.type === "Posição" || item.type === "Ruptura") && <p style={{ fontSize: 13, marginTop: 8 }}>Posição observada: {item.observedPosition ? `prateleira ${item.observedPosition.shelf}, posição ${item.observedPosition.position}` : "não determinada"}</p>}
       </div>
       <div style={{ marginTop: "auto", display: "grid", gap: 10, paddingTop: 18 }}>

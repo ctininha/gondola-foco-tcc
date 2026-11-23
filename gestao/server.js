@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { calculateIndicators } from '../server/indicators.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -22,7 +23,24 @@ function readAudit(row) {
   try {
     const result = JSON.parse(row.result_json);
     // Fields from database columns take precedence over potentially inconsistent JSON.
-    return { ...result, status: row.status, id: row.id, createdAt: row.created_at, corridor: row.corridor, module: row.module_name };
+    // Normalização somente em memória para exibição; não altera registros históricos.
+    const items = Array.isArray(result.items) ? result.items.map(item => {
+      const valid = ["P", "F"].includes(item.state) && item.priceRead != null && item.expectedPrice != null &&
+        Number.isFinite(Number(item.priceRead)) && Number.isFinite(Number(item.expectedPrice)) &&
+        Number(item.priceConfidence) >= 0.85 && ["EVALUABLE", "DIVERGENT"].includes(item.priceStatus);
+      const priceStatus = valid
+        ? (Math.round(Number(item.priceRead) * 100) === Math.round(Number(item.expectedPrice) * 100) ? "EVALUABLE" : "DIVERGENT")
+        : "NOT_APPLICABLE";
+      return { ...item, priceStatus, priceDivergent: priceStatus === "DIVERGENT" };
+    }) : [];
+    const indicators = calculateIndicators(items);
+    // Manter tratativas humanas já registradas por chave de ocorrência.
+    const previous = new Map((result.indicators?.occurrences || []).map(o => [o.occurrenceKey, o]));
+    indicators.occurrences = indicators.occurrences.map(o => {
+      const old = previous.get(o.occurrenceKey);
+      return old ? { ...o, status: old.status, reviewNote: old.reviewNote, statusUpdatedAt: old.statusUpdatedAt } : o;
+    });
+    return { ...result, items, indicators, status: row.status, id: row.id, createdAt: row.created_at, corridor: row.corridor, module: row.module_name };
   } catch { return null; }
 }
 function summarize(audits) {
@@ -53,6 +71,12 @@ function summarize(audits) {
         createdAt: audit.createdAt });
     }
     for (const occurrence of ind.occurrences || []) {
+      // Registros históricos podem conter alertas de etiquetas ausentes/ilegíveis.
+      // Não os exibir como ocorrências gerenciais de preço.
+      if (!["Ruptura", "Posição", "Preço"].includes(occurrence.type)) continue;
+      if (occurrence.type === "Preço" && (!["P", "F"].includes(occurrence.state) ||
+          occurrence.priceStatus !== "DIVERGENT" || !Number.isFinite(Number(occurrence.priceRead)) ||
+          occurrence.priceRead == null || occurrence.expectedPrice == null)) continue;
       occurrences.push({ ...occurrence, auditId: audit.id, createdAt: audit.createdAt, corridor: audit.corridor, module: audit.module });
     }
   }

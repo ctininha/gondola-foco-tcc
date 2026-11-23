@@ -149,14 +149,20 @@ F = produto identificado fora da posição prevista;
 A = ausência visual confirmável, somente quando a posição esperada estiver claramente vazia;
 I = indeterminado quando a foto não permitir concluir com segurança. Não transforme falta de evidência em ruptura.
 A confiança deve ser um número entre 0 e 1.
-Para preço, só leia etiquetas visíveis e legíveis. Nunca deduza valores.
+Para preços, leia somente etiquetas visíveis, legíveis e associadas com segurança ao SKU específico.
+Não associe uma etiqueta próxima a um produto sem evidência clara. Não invente nem deduza valores.
+A ausência do produto, uma posição indeterminada, uma etiqueta ilegível ou ausente e um preço não cadastrado
+não representam divergência de preço. Nesses casos, retorne priceRead:null, priceConfidence:0 e
+priceStatus:NOT_APPLICABLE (sem preço cadastrado), MISSING (sem etiqueta associável) ou ILLEGIBLE (leitura incerta).
+Só use EVALUABLE ou DIVERGENT quando o produto estiver identificado (P ou F), a etiqueta estiver
+claramente associada ao SKU, o valor estiver legível e a confiança de leitura for pelo menos 0.85.
 priceStatus:
-EVALUABLE = etiqueta legível e preço igual ao preço cadastrado;
-DIVERGENT = etiqueta legível e preço diferente do cadastrado;
-ILLEGIBLE = etiqueta presente, mas leitura incerta;
-MISSING = etiqueta não encontrada de forma visualmente confiável;
+EVALUABLE = dois preços válidos e iguais;
+DIVERGENT = dois preços válidos e diferentes;
+ILLEGIBLE = etiqueta identificada para o SKU, mas leitura incerta;
+MISSING = etiqueta não identificada de forma confiável;
 NOT_APPLICABLE = não há preço cadastrado para comparar.
-priceConfidence deve ser um número entre 0 e 1. A leitura inferior a 0.85 deve ser tratada como ILLEGIBLE.
+priceConfidence deve ser um número entre 0 e 1.
 Inclua evidência visual curta e objetiva. Se a posição observada não puder ser determinada, use null.
 Retorne somente JSON neste formato:
 {"items":[{"sku":"...","state":"P|F|A|I","confidence":0.0,"observedPosition":{"shelf":1,"position":1},"evidence":"...","priceRead":null,"priceStatus":"EVALUABLE|DIVERGENT|ILLEGIBLE|MISSING|NOT_APPLICABLE","priceConfidence":0.0}],"summary":"...","photoQuality":"good|usable|poor","manualReviewNotes":[]}
@@ -218,23 +224,15 @@ Lista estruturada: ${JSON.stringify(planogramItems)}
         const priceConfidence = normalizeConfidence(found?.priceConfidence);
         const expectedCents = moneyToCents(expected.price);
         const readCents = moneyToCents(found?.priceRead);
+        // A IA apenas lê o preço; a divergência é calculada pelo servidor.
+        // Ausência, identificação incerta e etiqueta sem associação segura não geram alerta.
         const rawPriceStatus = ["EVALUABLE", "DIVERGENT", "ILLEGIBLE", "MISSING", "NOT_APPLICABLE"].includes(found?.priceStatus)
           ? found.priceStatus : "NOT_APPLICABLE";
-
-        let priceStatus = "NOT_APPLICABLE";
-        let priceRead = readCents == null ? null : readCents / 100;
-        let priceDivergent = false;
-
-        if (expectedCents != null) {
-          if (rawPriceStatus === "MISSING") {
-            priceStatus = "MISSING";
-          } else if (rawPriceStatus === "ILLEGIBLE" || readCents == null || priceConfidence < 0.85) {
-            priceStatus = "ILLEGIBLE";
-          } else {
-            priceDivergent = expectedCents !== readCents;
-            priceStatus = priceDivergent ? "DIVERGENT" : "EVALUABLE";
-          }
-        }
+        const comparable = ["P", "F"].includes(state) && expectedCents != null && readCents != null
+          && priceConfidence >= 0.85 && ["EVALUABLE", "DIVERGENT"].includes(rawPriceStatus);
+        const priceStatus = comparable ? (expectedCents === readCents ? "EVALUABLE" : "DIVERGENT") : "NOT_APPLICABLE";
+        const priceRead = comparable ? readCents / 100 : null;
+        const priceDivergent = priceStatus === "DIVERGENT";
 
         return {
           sku: String(expected.sku),
