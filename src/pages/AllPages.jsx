@@ -98,7 +98,7 @@ export function Login() {
     <div className="screen-no-nav" style={{ justifyContent: "space-between", paddingTop: 48 }}>
       <div>
         <div style={{ textAlign: "center", marginBottom: 34 }}>
-          <div style={{ width: 72, height: 72, borderRadius: 20, background: "var(--primary)", color: "white", margin: "0 auto 14px", display: "grid", placeItems: "center", fontSize: 34 }}>⌗</div>
+          <img src="/favicon.svg" alt="Símbolo GôndolaFoco" style={{ width: 72, height: 72, display: "block", margin: "0 auto 14px" }} />
           <h1 style={{ fontSize: 28, fontWeight: 800 }}>GôndolaFoco</h1>
           <p style={{ color: "var(--text-muted)", marginTop: 5 }}>De olho na gôndola, foco no resultado</p>
         </div>
