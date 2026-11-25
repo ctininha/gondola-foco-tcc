@@ -8,7 +8,11 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { confirmItems } from "./conferencia-v13.js";
 import { calculateIndicators } from "./indicators.js";
+
+import { approved,listApproved,auditApproved } from "./auditoria-v12.js";
+import { runLocal } from "./local-audit.js";
 
 dotenv.config();
 
@@ -95,6 +99,45 @@ function normalizeConfidence(value) {
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, aiConfigured: Boolean(ai), storage: "sqlite" });
+});
+
+app.get('/api/planogramas-aprovados',async(req,res)=>{try{res.json(await listApproved(root));}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/planogramas-aprovados/:id/foto',async(req,res)=>{try{const {folder}=await approved(root,req.params.id);res.sendFile(path.join(folder,'referencia.png'));}catch(e){res.status(404).json({error:e.message});}});
+let progressV12={etapa:'Aguardando'};
+const previewRoot=path.join(dataDir,'local-preview');
+const validJob=id=>/^[a-f0-9-]{36}$/.test(id);
+const jobDir=id=>path.join(previewRoot,id);
+const saveJob=j=>{fs.mkdirSync(jobDir(j.id),{recursive:true});fs.writeFileSync(path.join(jobDir(j.id),'job.json.tmp'),JSON.stringify(j));fs.renameSync(path.join(jobDir(j.id),'job.json.tmp'),path.join(jobDir(j.id),'job.json'));};
+app.get('/api/auditoria-v12/progresso',(_req,res)=>res.json(progressV12));
+app.get('/api/auditoria-v12/jobs',(req,res)=>{try{const rows=[];for(const id of fs.existsSync(previewRoot)?fs.readdirSync(previewRoot):[]){if(!validJob(id)||db.prepare('SELECT id FROM audits WHERE id=?').get(id))continue;try{const dir=jobDir(id),report=JSON.parse(fs.readFileSync(path.join(dir,'relatorio.json'))),ref=JSON.parse(fs.readFileSync(path.join(dir,'referencia-validada.json')));rows.push({id,loja:ref.loja,setor:ref.setor,gondola:ref.gondola,IGE:report.indicadoresPreliminares.IGE,createdAt:fs.statSync(path.join(dir,'relatorio.json')).mtime.toISOString()});}catch{}}res.json(rows.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)));}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/auditoria-v12/jobs/:id',(req,res)=>{try{const id=req.params.id;if(!validJob(id))return res.sendStatus(400);const saved=db.prepare('SELECT result_json FROM audits WHERE id=?').get(id);if(saved)return res.json({id,status:'saved',result:JSON.parse(saved.result_json)});const dir=jobDir(id);const reportPath=['revisao-comparador-v12-2/relatorio.json','relatorio.json'].map(p=>path.join(dir,p)).find(p=>fs.existsSync(p));if(reportPath){const report=JSON.parse(fs.readFileSync(reportPath));return res.json({id,etapa:'Concluído',status:'done',completed:report.etapas.length,total:report.etapas.length,report});}const j=JSON.parse(fs.readFileSync(path.join(dir,'job.json')));if(j.status==='running'&&progressV12.id!==id){j.status='error';j.etapa='Interrompido pelo reinício do servidor';}res.json(j);}catch{res.status(404).json({error:'Auditoria não encontrada'});}});
+app.get('/api/auditoria-v12/jobs/:id/foto',(req,res)=>{if(!validJob(req.params.id))return res.sendStatus(400);const file=path.join(jobDir(req.params.id),'auditada-original');if(!fs.existsSync(file))return res.sendStatus(404);const fd=fs.openSync(file,'r');const sig=Buffer.alloc(12);try{fs.readSync(fd,sig,0,12,0);}finally{fs.closeSync(fd);}const mime=sig[0]===137?'image/png':sig[0]===255?'image/jpeg':sig.toString('ascii',8,12)==='WEBP'?'image/webp':null;if(!mime)return res.sendStatus(415);res.sendFile(file,{headers:{'Content-Type':mime}},err=>{if(err&&!res.headersSent)res.sendStatus(404);});});
+app.post('/api/auditoria-v12/jobs/:id/confirmar',(req,res)=>{try{
+ const id=req.params.id;if(!validJob(id))return res.sendStatus(400);
+ const existing=db.prepare('SELECT result_json FROM audits WHERE id=?').get(id);if(existing)return res.json(JSON.parse(existing.result_json));
+ const dir=jobDir(id), report=JSON.parse(fs.readFileSync(path.join(dir,'relatorio.json'))), ref=JSON.parse(fs.readFileSync(path.join(dir,'referencia-validada.json')));
+ const {items,indicators}=confirmItems(report,req.body.items,req.body.accepted);
+ const source=path.join(dir,'auditada-original'), sig=fs.readFileSync(source).subarray(0,12),ext=sig[0]===137?'png':sig[0]===255?'jpg':sig.toString('ascii',8,12)==='WEBP'?'webp':null;if(!ext)throw Error('Foto inválida');
+ const shelfName=id+'-shelf.'+ext, refName=id+'-reference.png';
+ fs.copyFileSync(source,path.join(uploadDir,shelfName));fs.copyFileSync(path.join(dataDir,'planogramas-v12',ref.id,'referencia.png'),path.join(uploadDir,refName));
+ const result={id,createdAt:new Date().toISOString(),corridor:ref.loja+' · '+ref.setor,module:ref.gondola,planogramName:'V'+ref.version,planograma:report.planograma,items,indicators,photoQuality:'usable',manualReviewNotes:[],aiSummary:'Auditoria local concluída com revisão por exceção',photos:{shelf:'/uploads/'+shelfName,planogram:'/uploads/'+refName}};
+ db.prepare('INSERT INTO audits (id,created_at,corridor,module_name,planogram_name,status,result_json,shelf_photo,planogram_photo) VALUES (?,?,?,?,?,?,?,?,?)').run(id,result.createdAt,result.corridor,result.module,result.planogramName,'processed',JSON.stringify(result),result.photos.shelf,result.photos.planogram);res.status(201).json(result);
+ }catch(e){res.status(400).json({error:e.message});}});
+app.post('/api/auditoria-v12',upload.single('shelfPhoto'),async(req,res)=>{let acquired=false;let j;try{if(!req.file)throw Error('Envie a fotografia atual');if(localBusy)return res.status(409).json({error:'Auditoria em andamento',id:progressV12.id});const {row}=await approved(root,req.body.planogramaId);localBusy=true;acquired=true;j={id:crypto.randomUUID(),planogramaId:row.id,status:'running',etapa:'Iniciando',startedAt:Date.now(),completed:0,total:new Set(row.referenciaValidada.map(i=>i.shelf)).size};progressV12=j;saveJob(j);res.status(202).json(j);await auditApproved({root,id:row.id,photo:req.file.path,out:jobDir(j.id),progress:etapa=>{j.etapa=etapa;if(etapa.startsWith('Reconhecendo prateleira')){j.completed=Math.max(0,j.startedShelves||0);j.startedShelves=j.completed+1;}saveJob(j);console.log(etapa);}});j.status='done';j.completed=j.total;j.etapa='Concluído';saveJob(j);}catch(e){if(j){j.status='error';j.etapa='Falha';j.error=e.message;saveJob(j);}if(!res.headersSent)res.status(502).json({error:e.message});}finally{if(acquired)localBusy=false;if(req.file?.path)fs.rmSync(req.file.path,{force:true});}});
+let localBusy = false;
+app.post("/api/local-preview", upload.fields([{name:"shelfPhoto",maxCount:1},{name:"referencePhoto",maxCount:1}]), async (req,res)=>{
+  const shelf=req.files?.shelfPhoto?.[0], reference=req.files?.referencePhoto?.[0];
+  let acquired=false;
+  try {
+    if(!shelf||!reference) return res.status(400).json({error:"Envie as duas fotografias."});
+    if(localBusy) return res.status(409).json({error:"Já existe uma auditoria local em execução."});
+    localBusy=true;acquired=true;
+    const items=JSON.parse(req.body.planogramItems||"[]");
+    const folder=path.join(dataDir,"local-preview",crypto.randomUUID());
+    const report=await runLocal({root,folder,items,reference:reference.path,shelf:shelf.path});
+    return res.json({report});
+  } catch(error){return res.status(502).json({error:error.message});}
+  finally {if(acquired)localBusy=false;for(const f of [shelf,reference])if(f?.path&&fs.existsSync(f.path))fs.unlinkSync(f.path);}
 });
 
 app.post(
@@ -327,22 +370,7 @@ app.patch("/api/audits/:id/occurrences/:occurrenceKey", (req, res) => {
   const row = db.prepare("SELECT result_json FROM audits WHERE id = ?").get(req.params.id);
   if (!row) return res.status(404).json({ error: "Auditoria não encontrada." });
 
-  const result = JSON.parse(row.result_json);
-  const occurrence = result.indicators.occurrences.find(item => item.occurrenceKey === req.params.occurrenceKey);
-  if (!occurrence) return res.status(404).json({ error: "Ocorrência não encontrada." });
-
-  const allowed = ["Pendente", "Resolvida", "Justificada", "Contestada"];
-  if (!allowed.includes(req.body.status)) return res.status(400).json({ error: "Status inválido." });
-  const note = String(req.body.note || "").trim().slice(0, 500);
-  if (req.body.status === "Justificada" && !note) {
-    return res.status(400).json({ error: "Informe o motivo da justificativa." });
-  }
-
-  occurrence.status = req.body.status;
-  occurrence.reviewNote = note;
-  occurrence.statusUpdatedAt = new Date().toISOString();
-  db.prepare("UPDATE audits SET result_json = ? WHERE id = ?").run(JSON.stringify(result), req.params.id);
-  return res.json({ ok: true, occurrence });
+  return res.status(409).json({error:"Auditoria concluída: somente consulta."});
 });
 
 app.use((error, _req, res, _next) => {

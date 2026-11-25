@@ -1,0 +1,1 @@
+export class IndicadorCobertura { static calcular(items){const avaliados=items.filter(i=>['P','F','A'].includes(i.state)).length;return {total:items.length,avaliados,percentual:items.length?100*avaliados/items.length:null};} }

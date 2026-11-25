@@ -36,3 +36,22 @@ data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# GondolaFoco - motor local de IA
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.gguf
+*.safetensors
+*.onnx
+*.pt
+*.pth
+
+# Backups e arquivos temporarios
+*.bak
+*.backup*
+*.zip
+backups/

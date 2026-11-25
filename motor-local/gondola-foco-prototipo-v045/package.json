@@ -1,0 +1,16 @@
+{
+  "name": "gondola-foco-prototipo",
+  "version": "0.4.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test testes/*.test.js",
+    "auditar": "node cli.js",
+    "reprocessar": "node cli.js --reprocessar",
+    "hibrido": "node hibrido.js",
+    "consolidado": "node consolidado.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

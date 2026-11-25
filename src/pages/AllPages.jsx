@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import LocalResult from "./LocalResult";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useLocation, useParams } from "wouter";
 import { useAuditDraft } from "../context/useAuditDraft";
-import { createAudit, getAudit, getAudits, getHealth, updateOccurrence } from "../services/auditApi";
+import { createLocalPreview, createAudit, getAudit, getAudits, getHealth } from "../services/auditApi";
 import { BottomNav } from "../components/SharedUI";
 
 const primaryButton = "btn-primary";
@@ -68,9 +69,6 @@ async function readText(file) {
     reader.readAsText(file, "UTF-8");
   });
 }
-function formatPercent(value) {
-  return value == null ? "Não calculável" : `${Number(value).toFixed(1).replace(".", ",")}%`;
-}
 function formatPrice(value) {
   return value == null ? "—" : Number(value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
@@ -78,11 +76,6 @@ function dateTime(value) {
   if (!value) return "—";
   return new Date(value).toLocaleString("pt-BR");
 }
-function statusBadge(status) {
-  const style = status === "Resolvida" ? "badge-success" : status === "Contestada" ? "badge-neutral" : status === "Justificada" ? "badge-warning" : "badge-danger";
-  return <span className={`badge ${style}`}>{status || "Pendente"}</span>;
-}
-
 export function Login() {
   const [, setLocation] = useLocation();
   const [matricula, setMatricula] = useState("");
@@ -117,6 +110,8 @@ export function Login() {
 export function Dashboard() {
   const [, setLocation] = useLocation();
   const [audits, setAudits] = useState([]);
+  const [pending,setPending]=useState([]);
+  useEffect(()=>{fetch(API_ORIGIN+"/api/auditoria-v12/jobs").then(r=>{if(!r.ok)throw Error("Falha ao carregar pendências");return r.json();}).then(setPending).catch(e=>setError(e.message));},[]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -137,6 +132,7 @@ export function Dashboard() {
         <div style={{ fontSize: 32, fontWeight: 800, margin: "5px 0" }}>{todays.length}</div>
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Contagem baseada somente em registros salvos no banco local.</div>
       </div>
+      {pending.length>0&&<section className="lr" style={{marginBottom:20}}><h2>Auditorias pendentes ({pending.length})</h2>{pending.map(p=><div className="lr-panel" key={p.id}><strong>{p.gondola}</strong><p>{p.loja} · {p.setor}</p><small>{dateTime(p.createdAt)} · IGE {p.IGE}</small><button className="btn-primary" style={{marginTop:12}} onClick={()=>{localStorage.setItem("gondola:v12-job",p.id);setLocation("/analyses/processing");}}>Continuar auditoria</button></div>)}</section>}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><h2 style={{ fontSize: 18 }}>Auditorias recentes</h2><button onClick={() => setLocation("/history")} style={{ border: 0, background: "none", color: "var(--primary)", fontWeight: 700 }}>Ver histórico</button></div>
       {error && <ErrorBox>{error}</ErrorBox>}
       {loading ? <p style={{ color: "var(--text-muted)" }}>Carregando auditorias...</p> : audits.length === 0 ? <div style={cardStyle}><strong>Nenhuma auditoria registrada.</strong><p style={{ marginTop: 6, color: "var(--text-muted)", fontSize: 14 }}>Importe o planograma, selecione as fotos e faça a primeira análise real.</p></div> : (
@@ -147,13 +143,20 @@ export function Dashboard() {
           </button>)}
         </div>
       )}
-      <div style={{ marginTop: "auto", paddingTop: 22 }}><button className={primaryButton} onClick={() => setLocation("/analyses/new")}>＋ Nova auditoria</button></div>
+      <div style={{ marginTop: "auto", paddingTop: 22 }}><button className={primaryButton} onClick={() => {localStorage.removeItem("gondola:v12-job");setLocation("/analyses/new");}}>＋ Nova auditoria</button></div>
       <BottomNav active="inicio" />
     </div>
   );
 }
 
-export function NewAnalysis() {
+export function NewAnalysis(){
+ const [,go]=useLocation();const {setDraft}=useAuditDraft();const [rows,setRows]=useState([]),[id,setId]=useState(''),[error,setError]=useState(''),[loading,setLoading]=useState(true),[legacy,setLegacy]=useState(false);
+ useEffect(()=>{fetch(API_ORIGIN+'/api/planogramas-aprovados').then(async r=>{if(!r.ok)throw Error('Não foi possível consultar planogramas');return r.json();}).then(setRows).catch(e=>setError(e.message)).finally(()=>setLoading(false));},[]);
+ const selected=rows.find(r=>r.id===id);const photo=selected?API_ORIGIN+'/api/planogramas-aprovados/'+selected.id+'/foto':'';
+ if(legacy)return <LegacyNewAnalysis/>;
+ return <div className="screen-no-nav"><BackHeader title="Nova auditoria"/><p>Selecione o planograma aprovado para o setor.</p><label style={{display:'grid',gap:10,margin:'20px 0'}}>Loja · Setor · Gôndola<select style={fieldStyle} value={id} onChange={e=>setId(e.target.value)}><option value="">Selecione</option>{rows.map(r=><option key={r.id} value={r.id}>{r.loja} · {r.setor} · {r.gondola} (v{r.version})</option>)}</select></label>{loading&&<p>Carregando...</p>}{error&&<ErrorBox>{error}</ErrorBox>}{!loading&&!rows.length&&!error&&<InfoBox>Nenhum planograma aprovado.</InfoBox>}{selected&&<div style={cardStyle}><strong>Referência aprovada · {selected.items.length} produtos</strong><img src={photo} alt="Fotografia do planograma" style={{width:'100%',marginTop:12,borderRadius:10}}/>{[...new Set(selected.items.map(i=>i.shelf))].map(n=><details key={n} style={{marginTop:12}}><summary>Prateleira {n}</summary>{selected.items.filter(i=>i.shelf===n).sort((a,b)=>a.position-b.position).map(i=><p key={i.sku}>{i.position}. {i.name} · {i.unidades} un.</p>)}</details>)}</div>}<button className={primaryButton} style={{marginTop:20}} disabled={!selected} onClick={()=>{setDraft({corridor:selected.setor,moduleName:selected.gondola,planogramName:selected.setor+' v'+selected.version,planogramItems:selected.items.map(i=>({...i,price:i.systemPrice,stockQuantity:i.stock})),planogramaId:selected.id,referenceUrl:photo,engine:'local',shelfPhoto:null});go('/analyses/camera');}}>Continuar para captura</button><button className="btn-outline" style={{marginTop:12}} onClick={()=>setLegacy(true)}>Importação manual (legado)</button></div>;
+}
+function LegacyNewAnalysis() {
   const [, setLocation] = useLocation();
   const { setDraft } = useAuditDraft();
   const [corridor, setCorridor] = useState("");
@@ -271,7 +274,7 @@ export function NewAnalysis() {
 
   const continueToCapture = () => {
     if (!items.length) { setError("Importe e valide o planograma antes de continuar."); return; }
-    setDraft({ corridor: corridor.trim(), moduleName: moduleName.trim(), planogramName: planogramCsv?.name || "Planograma importado", planogramItems: items, shelfPhoto: null });
+    setDraft({ corridor: corridor.trim(), moduleName: moduleName.trim(), planogramName: planogramCsv?.name || "Planograma importado", planogramItems: items, shelfPhoto: null, engine: "gemini", referencePhoto: null });
     setLocation("/analyses/camera");
   };
 
@@ -329,10 +332,12 @@ export function GuidedCamera() {
         {draft.shelfPhoto ? "Trocar foto da gôndola" : "Escolher foto / abrir câmera"}
         <input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={e => selectPhoto(e.target.files?.[0])} style={{ display: "none" }} />
       </label>
+      {!draft.planogramaId && <label style={{display:"grid",gap:8,marginTop:14}}>Motor de IA<select value={draft.engine||"gemini"} onChange={e=>setDraft(current=>({...current,engine:e.target.value}))}><option value="gemini">Gemini (nuvem)</option><option value="local">IA híbrida local (experimental)</option></select></label>}
+      {draft.engine==="local" && !draft.planogramaId && <label style={{display:"grid",gap:8,marginTop:14}}>Fotografia de referência<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>{const f=e.target.files?.[0];if(f&&(!/^image\/(jpeg|png|webp)$/.test(f.type)||f.size>12*1024*1024)){setError("Referência inválida: use JPG, PNG ou WEBP até 12 MB.");return;}setError("");setDraft(current=>({...current,referencePhoto:f||null}));}}/>{draft.referencePhoto?.name}</label>}
       <p style={{ fontSize: 12, color: "#CBD5E1", marginTop: 8 }}>No Mac, o seletor permite escolher uma imagem salva no computador. Em celular compatível, pode abrir a câmera.</p>
       {error && <div style={{ color: "#FCA5A5", marginTop: 10 }}>{error}</div>}
       <div style={{ marginTop: "auto", paddingTop: 18, display: "grid", gap: 10 }}>
-        <button className={primaryButton} disabled={!draft.shelfPhoto} onClick={() => setLocation("/analyses/review")}>Revisar foto</button>
+        <button className={primaryButton} disabled={!draft.shelfPhoto || (draft.engine==="local"&&!draft.planogramaId&&!draft.referencePhoto)} onClick={() => setLocation("/analyses/review")}>Revisar foto</button>
         <button className="btn-outline" onClick={() => setLocation("/analyses/new")}>Voltar</button>
       </div>
     </div>
@@ -373,6 +378,28 @@ useEffect(() => {
 }
 
 export function AnalyzingProcess() {
+  const {draft}=useAuditDraft();
+  return draft.engine==="local" || !draft.shelfPhoto || localStorage.getItem("gondola:v12-job") ? <LocalPreview/> : <GeminiProcess/>;
+}
+function LocalPreview(){
+ const {draft}=useAuditDraft();const [,go]=useLocation();
+ const [id,setId]=useState(()=>localStorage.getItem('gondola:v12-job')||''),[job,setJob]=useState(null),[error,setError]=useState(''),[sending,setSending]=useState(false),[now,setNow]=useState(Date.now());
+ const report=job?.report;
+ const started=useRef(false);
+ function selectJob(value){localStorage.setItem('gondola:v12-job',value);setId(value);setJob(null);setError('');}
+ useEffect(()=>{if(!id)return;let alive=true;const tick=async()=>{try{const r=await fetch(API_ORIGIN+'/api/auditoria-v12/jobs/'+encodeURIComponent(id));if(!r.ok)throw Error('Não foi possível recuperar a auditoria');const j=await r.json();if(alive){if(j.status==='saved'){localStorage.removeItem('gondola:v12-job');go(`/analyses/${id}/result`);return;}setJob(j);setError('');setNow(Date.now());}}catch(e){if(alive)setError(e.message);}};tick();const timer=setInterval(tick,1500);return()=>{alive=false;clearInterval(timer);};},[id]);
+ async function start(){setSending(true);setError('');try{const result=await createLocalPreview(draft);if(result.id)selectJob(result.id);else setJob({status:'done',report:result.report});}catch(e){setError(e.message);}finally{setSending(false);}}
+ useEffect(()=>{if(!id&&!started.current&&draft.shelfPhoto&&(draft.planogramaId||draft.referencePhoto)){started.current=true;start();}},[id]);
+ const busy=sending||Boolean(id&&!job)||job?.status==='running';
+ return <div className="screen-no-nav" style={{display:"flex",flexDirection:"column",gap:16}}><BackHeader title={report?"Auditoria":"Analisando gôndola"}/>
+ {error&&<ErrorBox>{error}</ErrorBox>}{job?.error&&<ErrorBox>{job.error}</ErrorBox>}
+ {busy&&<div className="audit-progress" role="status"><div className="audit-progress-ring" style={{background:`conic-gradient(var(--primary) ${job?.total>0?100*job.completed/job.total:0}%, #e2e8f0 0)`}}><div><strong>{job?.total>0?`${job.completed}/${job.total}`:'…'}</strong><small>Prateleiras</small></div></div><h2>Análise em andamento</h2><p>{job?.etapa||'Preparando análise'}</p>{job?.startedAt&&<small>Tempo decorrido: {Math.floor(Math.max(0,now-job.startedAt)/60000)}min {String(Math.floor(Math.max(0,now-job.startedAt)/1000)%60).padStart(2,'0')}s</small>}<p>Você pode voltar ao início. A análise continuará normalmente.</p></div>}
+ {!busy&&!report&&(error||job?.status==='error')&&<button className={primaryButton} disabled={!draft.shelfPhoto} onClick={start}>Tentar novamente</button>}
+ {report&&<LocalResult key={id||"legacy"} report={report} id={id} origin={API_ORIGIN}/>}
+
+ <button className="btn-outline" onClick={()=>go('/dashboard')}>Voltar ao início</button></div>;
+}
+function GeminiProcess() {
   const [, setLocation] = useLocation();
   const { draft } = useAuditDraft();
   const [step, setStep] = useState(1);
@@ -426,195 +453,16 @@ export function AnalysisResult() {
   const { audit, error, loading } = useAudit(id);
   if (loading) return <div className="screen-no-nav">Carregando resultado real...</div>;
   if (error) return <div className="screen-no-nav"><ErrorBox>{error}</ErrorBox><button className="btn-outline" onClick={() => setLocation("/dashboard")}>Voltar ao início</button></div>;
-  const metrics = audit.indicators;
-  const occurrenceCount = metrics.occurrences.length;
-  const igeValue = metrics.IGE == null
-    ? null
-    : Math.max(0, Math.min(100, Number(metrics.IGE)));
-  return (
-    <div className="screen-no-nav">
-      <BackHeader title="Resultado" />
-      <p style={{ color: "var(--text-muted)", fontSize: 13 }}>{audit.corridor} · Módulo {audit.module} · {dateTime(audit.createdAt)}</p>
-      {audit.planogramName && <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>Referência: {audit.planogramName}</p>}
-      <div style={{ display: "grid", placeItems: "center", padding: "22px 0" }}>
-        <div
-          style={{
-            width: 150,
-            height: 150,
-            padding: 12,
-            boxSizing: "border-box",
-            borderRadius: "50%",
-            background: igeValue == null
-              ? "var(--primary-light)"
-              : `conic-gradient(from -90deg, var(--primary) ${igeValue}%, var(--primary-light) ${igeValue}%)`,
-            display: "grid",
-            placeItems: "center",
-          }}
-        >
-          <div style={{
-            width: "100%",
-            height: "100%",
-            borderRadius: "50%",
-            background: "white",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            textAlign: "center",
-          }}>
-            <strong style={{ fontSize: 44 }}>{igeValue == null ? "—" : igeValue}</strong>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>de 100</span>
-          </div>
-        </div>
-        <strong style={{ marginTop: 12 }}>Índice geral de execução</strong>
-        <span className="badge badge-neutral" style={{ marginTop: 6 }}>{metrics.classification}</span>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
-        <div style={{ ...cardStyle, textAlign: "center", padding: 10 }}><div style={{ fontSize: 12, color: "var(--text-muted)" }}>Ruptura (IR)</div><strong style={{ fontSize: 19 }}>{formatPercent(metrics.IR)}</strong></div>
-        <div style={{ ...cardStyle, textAlign: "center", padding: 10 }}><div style={{ fontSize: 12, color: "var(--text-muted)" }}>Planograma (ICP)</div><strong style={{ fontSize: 19 }}>{formatPercent(metrics.ICP)}</strong></div>
-        <div style={{ ...cardStyle, textAlign: "center", padding: 10 }}><div style={{ fontSize: 12, color: "var(--text-muted)" }}>Preço (IDP)</div><strong style={{ fontSize: 19 }}>{formatPercent(metrics.IDP)}</strong><div style={{ fontSize: 11, color: "var(--text-muted)" }}>{metrics.D} item(ns)</div></div>
-      </div>
-      <div style={{ ...cardStyle, marginTop: 14 }}>
-        <strong>{occurrenceCount} ocorrência(s) identificada(s)</strong>
-        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 5 }}>{metrics.A} ruptura(s) · {metrics.positionCount ?? metrics.occurrences.filter(o => o.type === "Posição").length} fora de posição · {metrics.D} divergência(s) de preço</p>
-        <p style={{ fontSize: 13, marginTop: 8 }}>SKUs esperados: {metrics.expected} · Avaliáveis: {metrics.V} · Indeterminados: {metrics.indeterminate}</p>
-      </div>
-      {(metrics.IR == null || metrics.ICP == null || metrics.IDP == null) && <InfoBox>Um ou mais indicadores não puderam ser calculados por falta de itens avaliáveis ou preços vigentes e legíveis. O IGE usa a média dos componentes disponíveis.</InfoBox>}
-      {metrics.needsNewPhoto && <ErrorBox>{metrics.indeterminate} item(ns) ficaram indeterminados. A especificação recomenda refazer a foto quando ultrapassam 20% dos itens esperados.</ErrorBox>}
-      {audit.photoQuality === "poor" && <ErrorBox>A IA classificou a qualidade da foto como baixa. Revise os itens indeterminados antes de concluir.</ErrorBox>}
-      {audit.aiSummary && <div style={{ marginTop: 12, fontSize: 14, color: "var(--text-muted)" }}><strong>Resumo da análise:</strong> {audit.aiSummary}</div>}
-      <div style={{ marginTop: "auto", paddingTop: 18, display: "grid", gap: 10 }}>
-        <button className={primaryButton} onClick={() => setLocation(`/analyses/${id}/occurrences`)}>{occurrenceCount ? "Ver ocorrências" : "Concluir corredor"}</button>
-        <button className="btn-outline" onClick={() => setLocation("/analyses/new")}>Nova auditoria</button>
-      </div>
-    </div>
-  );
+  return <div className="screen-no-nav" style={{display:'flex',flexDirection:'column',gap:16}}><BackHeader title="Auditoria concluída"/><LocalResult key={id} report={audit} id={id} origin={API_ORIGIN} completed={audit}/><button className="btn-outline" onClick={()=>setLocation('/dashboard')}>Voltar ao início</button></div>;
 }
-
-export function OccurrencesList() {
-  const { id } = useParams();
-  const [, setLocation] = useLocation();
-  const { audit, error, loading } = useAudit(id);
-  const [filter, setFilter] = useState("Todas");
-  const items = audit?.indicators?.occurrences || [];
-  const visible = items.filter(item => item.status !== "Contestada" && (filter === "Todas" || item.type === filter));
-  const treated = items.filter(item => ["Resolvida", "Justificada", "Contestada"].includes(item.status)).length;
-  const finish = items.every(item => ["Resolvida", "Justificada", "Contestada"].includes(item.status));
-  if (loading) return <div className="screen-no-nav">Carregando ocorrências...</div>;
-  if (error) return <div className="screen-no-nav"><ErrorBox>{error}</ErrorBox></div>;
-  return (
-    <div className="screen-no-nav">
-      <BackHeader title="Ocorrências" back={`/analyses/${id}/result`} />
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
-        gap: 8,
-        paddingBottom: 12,
-        width: "100%",
-        boxSizing: "border-box",
-      }}>
-        {["Todas", "Ruptura", "Preço", "Posição"].map(type => (
-          <button
-            key={type}
-            onClick={() => setFilter(type)}
-            style={{
-              border: filter === type ? 0 : "1px solid var(--border)",
-              background: filter === type ? "var(--primary)" : "white",
-              color: filter === type ? "white" : "var(--text-main)",
-              borderRadius: 20,
-              padding: "9px 10px",
-              minWidth: 0,
-              minHeight: 40,
-              width: "100%",
-              whiteSpace: "normal",
-              overflowWrap: "anywhere",
-              lineHeight: 1.2,
-              textAlign: "center",
-            }}
-          >
-            {type} {type === "Todas"
-              ? items.filter(x => x.status !== "Contestada").length
-              : items.filter(x => x.type === type && x.status !== "Contestada").length}
-          </button>
-        ))}
-      </div>
-      {visible.length === 0 ? <div style={cardStyle}>Nenhuma ocorrência neste filtro.</div> : <div style={{ display: "grid", gap: 10, overflowY: "auto" }}>
-        {visible.map(item => <button key={item.occurrenceKey} onClick={() => setLocation(`/analyses/${id}/occurrences/${encodeURIComponent(item.occurrenceKey)}`)} style={{ ...cardStyle, textAlign: "left", cursor: "pointer" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><strong>{item.name}</strong>{statusBadge(item.status)}</div>
-          <div style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 5 }}>SKU {item.sku} · {item.type}</div>
-          <div style={{ fontSize: 13, marginTop: 6 }}>{item.evidence}</div>
-        </button>)}
-      </div>}
-      <div style={{ marginTop: "auto", paddingTop: 16 }}>
-        <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>{treated} de {items.length} tratadas</p>
-        <button className={primaryButton} disabled={!finish} onClick={() => setLocation(`/analyses/${id}/success`)}>Concluir tratativa</button>
-      </div>
-    </div>
-  );
+export function OccurrencesList(){
+ const {id}=useParams();const [,go]=useLocation();const {audit,error,loading}=useAudit(id);const [filter,setFilter]=useState('Todas');
+ if(loading)return <p>Carregando…</p>;if(error)return <ErrorBox>{error}</ErrorBox>;
+ const items=audit.indicators.occurrences;
+ return <div className="screen-no-nav"><BackHeader title="Ocorrências" back={`/analyses/${id}/result`}/><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{['Todas','Ruptura','Preço','Posição'].map(t=><button key={t} className={filter===t?'btn-primary':'btn-outline'} onClick={()=>setFilter(t)}>{t} {items.filter(i=>t==='Todas'||i.type===t).length}</button>)}</div><div className="lr">{items.filter(i=>filter==='Todas'||i.type===filter).map(i=><div className="lr-panel" key={i.occurrenceKey}><strong>{i.name}</strong><p>{i.type} · SKU {i.sku}</p><p>{i.type==='Ruptura'?(i.stockQuantity??i.stock)==null?'Conferir estoque':(i.stockQuantity??i.stock)>0?'Repor produto':'Solicitar compra':i.type==='Preço'?'Conferir etiqueta':'Ajustar posição'}</p>{i.type==='Preço'&&<p>Sistema {formatPrice(i.expectedPrice??i.systemPrice)} · Gôndola {formatPrice(i.priceRead)}</p>}{i.type==='Ruptura'&&<p>Estoque: {i.stockQuantity??i.stock??'Desconhecido'}</p>}</div>)}</div><button className="btn-outline" onClick={()=>go(`/analyses/${id}/result`)}>Voltar</button></div>;
 }
-
-export function OccurrenceDetail() {
-  const { id, occurrenceKey } = useParams();
-  const [, setLocation] = useLocation();
-  const { audit, error, loading, setAudit } = useAudit(id);
-  const [reason, setReason] = useState("");
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const decodedKey = decodeURIComponent(occurrenceKey || "");
-  const item = audit?.indicators?.occurrences?.find(x => x.occurrenceKey === decodedKey);
-  const save = async (status, explanation = "") => {
-    if (!item) return;
-    setBusy(true);
-    try {
-      await updateOccurrence(id, item.occurrenceKey, status, explanation);
-      const fresh = await getAudit(id); setAudit(fresh);
-      setLocation(`/analyses/${id}/occurrences`);
-    } catch (e) { window.alert(e.message); }
-    finally { setBusy(false); }
-  };
-  if (loading) return <div className="screen-no-nav">Carregando ocorrência...</div>;
-  if (error || !item) return <div className="screen-no-nav"><ErrorBox>{error || "Ocorrência não encontrada."}</ErrorBox></div>;
-  return (
-    <div className="screen-no-nav">
-      <BackHeader title={item.type} back={`/analyses/${id}/occurrences`} />
-      <h2 style={{ fontSize: 20, marginBottom: 4 }}>{item.name}</h2>
-      <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 16 }}>SKU {item.sku} · Prateleira {item.expectedPosition?.shelf}, posição {item.expectedPosition?.position}</p>
-      {audit.photos?.shelf && <img src={`${API_ORIGIN}${audit.photos.shelf}`} alt="Foto da gôndola analisada" style={{ width: "100%", maxHeight: 220, objectFit: "contain", borderRadius: 12, background: "#F1F5F9" }} />}
-      <div style={{ ...cardStyle, marginTop: 14 }}>
-        <strong>Evidência identificada</strong><p style={{ fontSize: 14, marginTop: 7 }}>{item.evidence}</p>
-        <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 8 }}>Confiança da análise: {(Number(item.confidence || 0) * 100).toFixed(0)}%</p>
-        {(item.type === "Preço") && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}><div><small>Preço na gôndola</small><strong style={{ display: "block", color: "var(--danger)" }}>{formatPrice(item.priceRead)}</strong></div><div><small>Preço do sistema</small><strong style={{ display: "block", color: "var(--success)" }}>{formatPrice(item.expectedPrice)}</strong></div><div style={{ gridColumn: "1 / -1", fontSize: 13 }}><strong>Diferença por unidade: {formatPrice(Math.abs(Number(item.priceRead) - Number(item.expectedPrice)))}</strong><p>{Number(item.priceRead) > Number(item.expectedPrice) ? "Preço anunciado acima do sistema: pode desestimular a compra. Conferir e corrigir." : "Preço anunciado abaixo do sistema: pode gerar divergência no caixa. Conferir e corrigir."}</p></div></div>}
-        {(item.type === "Posição" || item.type === "Ruptura") && <p style={{ fontSize: 13, marginTop: 8 }}>Posição observada: {item.observedPosition ? `prateleira ${item.observedPosition.shelf}, posição ${item.observedPosition.position}` : "não determinada"}</p>}
-      </div>
-      <div style={{ marginTop: "auto", display: "grid", gap: 10, paddingTop: 18 }}>
-        <button className={primaryButton} disabled={busy} onClick={() => save("Resolvida")}>Marcar como resolvido</button>
-        <label style={{ fontSize: 13, fontWeight: 600 }}>Não consegui resolver — motivo</label>
-        <select style={fieldStyle} value={reason} onChange={e => setReason(e.target.value)}><option value="">Selecione um motivo</option><option>Sem estoque no depósito</option><option>Produto descontinuado</option><option>Etiqueta indisponível</option><option>Outro</option></select>
-        {reason === "Outro" && <input style={fieldStyle} value={note} onChange={e => setNote(e.target.value)} placeholder="Descreva o motivo" />}
-        <button className="btn-outline" disabled={busy || !reason || (reason === "Outro" && !note.trim())} onClick={() => save("Justificada", reason === "Outro" ? note : reason)}>Registrar justificativa</button>
-        <button onClick={() => save("Contestada", note || "Funcionário sinalizou alerta incorreto")} style={{ border: 0, background: "none", color: "var(--danger)", padding: 10 }}>Este alerta está incorreto</button>
-      </div>
-    </div>
-  );
-}
-
-export function AnalysisSuccess() {
-  const { id } = useParams();
-  const [, setLocation] = useLocation();
-  const { audit, error, loading } = useAudit(id);
-  if (loading) return <div className="screen-no-nav">Carregando conclusão...</div>;
-  if (error) return <div className="screen-no-nav"><ErrorBox>{error}</ErrorBox></div>;
-  const all = audit.indicators.occurrences || [];
-  const done = all.filter(x => ["Resolvida", "Justificada", "Contestada"].includes(x.status)).length;
-  return <div className="screen-no-nav" style={{ textAlign: "center", justifyContent: "center" }}>
-    <div style={{ width: 76, height: 76, borderRadius: 50, background: "var(--success-bg)", color: "var(--success)", display: "grid", placeItems: "center", fontSize: 42, margin: "0 auto 18px" }}>✓</div>
-    <h1 style={{ fontSize: 24 }}>Tratativa registrada</h1>
-    <p style={{ color: "var(--text-muted)", marginTop: 6 }}>{audit.corridor} · Módulo {audit.module}</p>
-    <div style={{ ...cardStyle, display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: 24 }}><div><strong style={{ fontSize: 28 }}>{audit.indicators.IGE ?? "—"}</strong><p style={{ fontSize: 12, color: "var(--text-muted)" }}>IGE original</p></div><div><strong style={{ fontSize: 28 }}>{done}/{all.length}</strong><p style={{ fontSize: 12, color: "var(--text-muted)" }}>ocorrências tratadas</p></div></div>
-    <InfoBox>A nota exibida é a da auditoria original. Para comprovar as correções e atualizar os indicadores, faça uma nova auditoria com outra foto.</InfoBox>
-    <div style={{ display: "grid", gap: 10, marginTop: 28 }}><button className={primaryButton} onClick={() => setLocation("/analyses/new")}>Nova auditoria</button><button className="btn-outline" onClick={() => setLocation("/dashboard")}>Voltar ao início</button></div>
-  </div>;
-}
+export function OccurrenceDetail(){return <OccurrencesList/>;}
+export function AnalysisSuccess(){return <AnalysisResult/>;}
 
 export function History() {
   const [, setLocation] = useLocation();

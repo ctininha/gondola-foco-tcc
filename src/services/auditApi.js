@@ -92,3 +92,12 @@ export async function updateOccurrence(auditId, occurrenceKey, status, note = ""
 export async function getHealth() {
   return request("/api/health");
 }
+
+export async function createLocalPreview(draft) {
+  const body=new FormData();
+  body.append("shelfPhoto",draft.shelfPhoto);
+  if(draft.planogramaId){body.append("planogramaId",draft.planogramaId);return request("/api/auditoria-v12",{method:"POST",body});}
+  body.append("referencePhoto",draft.referencePhoto);
+  body.append("planogramItems",JSON.stringify(draft.planogramItems));
+  return request("/api/local-preview",{method:"POST",body});
+}

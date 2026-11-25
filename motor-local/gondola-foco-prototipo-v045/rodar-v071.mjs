@@ -1,0 +1,12 @@
+import {readFile,mkdir} from 'node:fs/promises';
+import {join} from 'node:path';
+import {MotorAuditoria} from './src/MotorAuditoria.js';
+import {ComparadorV071} from './src/ComparadorV071.js';
+import {ProvedorOllama} from './src/ProvedorOllama.js';
+const [planograma,precos,pasta,ocr,anchors,saida,origem]=process.argv.slice(2);
+if(!saida)throw Error('Uso: node rodar-v07.mjs PLAN PREÇOS RECORTES OCR ÂNCORAS SAÍDA [REPLAY]');
+const read=async p=>JSON.parse(await readFile(p,'utf8'));
+const comparador=new ComparadorV071(await read(join(pasta,'evidencias.json')),await read(join(pasta,'localizacao.json')),await read(ocr),await read(anchors));
+await mkdir(saida,{recursive:false});
+const r=await new MotorAuditoria({comparador,provedor:new ProvedorOllama()}).executar({planograma,precos,imagens:n=>join(pasta,`comparacao-${n}.png`),saida,origem,onProgress:n=>console.log('Prateleira',n)});
+console.log(JSON.stringify(r.indicadoresPreliminares, (k,v)=>k==='occurrences'?undefined:v,2));console.table(r.items.map(i=>({produto:i.name,estado:i.candidateState,preco:i.priceRead,quantidade:i.quantidadeVisivel})));console.log('Relatório preliminar:',join(saida,'relatorio.json'));
