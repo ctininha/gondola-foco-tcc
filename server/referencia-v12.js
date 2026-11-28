@@ -14,5 +14,5 @@ export async function reconhecerReferencia(folder,row,fetcher=fetch){
 }
 export function validarConferencia(items,entries){
  if(!Array.isArray(entries)||entries.length!==items.length)throw Error('Confira todos os produtos');
- const seen=new Set();return entries.map(e=>{const item=items.find(i=>i.sku===e.sku);if(!item||seen.has(e.sku)||e.confirmado!==true||!Number.isInteger(e.unidades)||e.unidades<1||!Number.isInteger(e.colunas)||e.colunas<1||e.colunas>e.unidades)throw Error('Conferência inválida: '+e.sku);seen.add(e.sku);return {...item,unidades:e.unidades,colunas:e.colunas,confirmado:true};});
+ const seen=new Set();return entries.map(e=>{const item=items.find(i=>i.sku===e.sku);if(!item||seen.has(e.sku)||e.confirmado!==true||!Number.isSafeInteger(e.unidades)||e.unidades<1||!Number.isSafeInteger(e.colunas)||e.colunas<1||e.colunas>e.unidades)throw Error(item?`Conferência pendente: ${item.name} (Prateleira ${item.shelf}, posição ${item.position}). Revise colunas, unidades e confirmação.`:'Revise a lista de produtos antes de aprovar.');seen.add(e.sku);return {...item,unidades:e.unidades,colunas:e.colunas,confirmado:true};});
 }

@@ -28,11 +28,12 @@ export function summarize(audits) {
   // Only the latest audit of each corridor/module is counted in the current snapshot.
   const latest = new Map();
   for (const audit of audits) {
+    if (!audit.planograma?.id) continue;
     const key = JSON.stringify([audit.corridor, audit.module]);
     if (!latest.has(key)) latest.set(key, audit);
   }
   const current = [...latest.values()];
-  const totals = { expected: 0, V: 0, A: 0, P: 0, Q: 0, D: 0, positionCount: 0, indeterminate: 0 };
+  const totals = { expected: 0, V: 0, A: 0, P: 0, Q: 0, D: 0, positionCount: 0, indeterminate: 0, frontsExpected:0, frontsMet:0, frontsEvaluated:0 };
   const occurrences = [];
   const stockActions = { replenishment: 0, purchaseReview: 0, verifyStock: 0 };
   const stockItems = [];
@@ -42,19 +43,20 @@ export function summarize(audits) {
     // Cada SKU ausente entra em exatamente uma categoria. Não somar ocorrências
     // de etiqueta/preço, que podem coexistir com a ruptura do mesmo SKU.
     for (const item of audit.items || []) {
-      if (item.state !== 'A') continue;
+      const partial = ['P','F'].includes(item.state) && Number.isSafeInteger(item.frentesConfirmadas) && item.frentesConfirmadas > 0 && item.frentesConfirmadas < item.frentesPrevistas;
+      if (item.state !== 'A' && !partial) continue;
       const stock = item.stockQuantity;
       const category = Number.isSafeInteger(stock) && stock >= 0
         ? (stock > 0 ? 'replenishment' : 'purchaseReview') : 'verifyStock';
       stockActions[category] += 1;
       stockItems.push({ sku: item.sku, name: item.name, stockQuantity: category === 'verifyStock' ? null : stock,
-        category, auditId: audit.id, corridor: audit.corridor, module: audit.module,
+        category, partial, frentesPrevistas:item.frentesPrevistas, frentesConfirmadas:item.frentesConfirmadas, auditId: audit.id, corridor: audit.corridor, module: audit.module,
         createdAt: audit.createdAt });
     }
     for (const occurrence of ind.occurrences || []) {
       // Registros históricos podem conter alertas de etiquetas ausentes/ilegíveis.
       // Não os exibir como ocorrências gerenciais de preço.
-      if (!["Ruptura", "Posição", "Preço"].includes(occurrence.type)) continue;
+      if (!["Ruptura", "Posição", "Preço", "Exposição parcial"].includes(occurrence.type)) continue;
       if (occurrence.type === "Preço" && (!["P", "F"].includes(occurrence.state) ||
           occurrence.priceStatus !== "DIVERGENT" || !Number.isFinite(Number(occurrence.priceRead)) ||
           occurrence.priceRead == null || occurrence.expectedPrice == null)) continue;
@@ -66,5 +68,5 @@ export function summarize(audits) {
   const IDP = totals.Q ? 100 * totals.D / totals.Q : null;
   const components = [IR === null ? null : 100 - IR, ICP, IDP === null ? null : 100 - IDP].filter(x => x !== null);
   const IGE = components.length ? Math.round(components.reduce((a,b) => a+b,0)/components.length) : null;
-  return { totals, IR, ICP, IDP, IGE, currentModules: current.length, occurrences, stockActions, stockItems, latestAudit: audits[0]?.createdAt || null };
+  return { totals, IR, ICP, IDP, IGE, ICF:totals.frontsExpected&&totals.frontsEvaluated===totals.expected?100*totals.frontsMet/totals.frontsExpected:null, currentModules: current.length, occurrences, stockActions, stockItems, latestAudit: audits[0]?.createdAt || null };
 }

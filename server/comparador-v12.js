@@ -26,6 +26,6 @@ export class ComparadorV12 extends ComparadorV071 {
  const A=data.A.map(r=>({...r}));
  const result=super.comparar(expected,{A,B});
  // A visible group with a matched label can still be position-ambiguous.
- return result.map(i=>({...i,quantidadeVisivel:i.candidateState==='A'?0:null,diferencaVisivel:i.candidateState==='A'?-i.unidades:null,frontReduction:null}));
+ return result.map(i=>({...i,quantidadeVisivel:i.candidateState==='A'?0:null,diferencaVisivel:i.candidateState==='A'?-i.unidades:null,frontReduction:null,frentesPrevistas:Number.isSafeInteger(i.colunas)&&i.colunas>0?i.colunas:null,frentesCandidatas:i.candidateState==='A'?0:['P','F'].includes(i.candidateState)&&Number.isSafeInteger(i.observed?.colunas)&&i.observed.colunas>0?i.observed.colunas:null}));
  }
 }

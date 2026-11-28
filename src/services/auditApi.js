@@ -94,10 +94,9 @@ export async function getHealth() {
 }
 
 export async function createLocalPreview(draft) {
-  const body=new FormData();
-  body.append("shelfPhoto",draft.shelfPhoto);
-  if(draft.planogramaId){body.append("planogramaId",draft.planogramaId);return request("/api/auditoria-v12",{method:"POST",body});}
-  body.append("referencePhoto",draft.referencePhoto);
-  body.append("planogramItems",JSON.stringify(draft.planogramItems));
-  return request("/api/local-preview",{method:"POST",body});
+  if (!draft.planogramaId || !draft.shelfPhoto) throw new Error("Selecione um planograma aprovado e a foto atual.");
+  const body = new FormData();
+  body.append("shelfPhoto", draft.shelfPhoto);
+  body.append("planogramaId", draft.planogramaId);
+  return request("/api/auditoria-v12", {method:"POST", body});
 }

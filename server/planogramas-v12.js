@@ -31,6 +31,18 @@ export function installPlanogramas(app,root){
  row.referenciaValidada=validarConferencia(row.items,req.body?.produtos);row.status='APROVADO';row.approvedAt=new Date().toISOString();await saveRow(row);res.json(row);
  }finally{busy=false;}
  }));
+ app.post('/api/planogramas/:id/estoque',multer({storage:multer.memoryStorage(),limits:{fileSize:1024*1024,files:1}}).single('precos'),route(async(req,res)=>{
+ if(busy)return res.status(409).json({error:'Processamento em andamento'});busy=true;
+ try{const old=await getRow(req.params.id);if(old.status!=='APROVADO'||!req.file)throw Error('Selecione um CSV de preços e estoques para uma referência aprovada.');
+ const versions=(await list()).filter(r=>['loja','setor','gondola'].every(k=>r[k]===old[k]));if(versions.some(r=>r.version>old.version&&r.status==='APROVADO'))throw Error('Atualize a versão aprovada mais recente.');
+ const id=randomUUID(),folder=path.join(base,id),source=path.join(base,old.id);await fs.mkdir(folder,{recursive:true});
+ await fs.copyFile(path.join(source,'plan.csv'),path.join(folder,'plan.csv'));await fs.writeFile(path.join(folder,'precos.csv'),req.file.buffer);
+ const items=await new LeitorPlanograma().ler(path.join(folder,'plan.csv'),path.join(folder,'precos.csv'));const csvSkus=new Set(req.file.buffer.toString('utf8').split(/\r?\n/).slice(1).filter(x=>x.trim()).map(x=>x.split(';')[0].trim()));const bySku=new Map(items.map(i=>[i.sku,i]));
+ if(csvSkus.size!==items.length||items.length!==old.referenciaValidada.length||old.referenciaValidada.some(i=>!bySku.has(i.sku)||!csvSkus.has(i.sku)))throw Error('O CSV deve conter todos os produtos do planograma.');
+ for(const name of ['referencia.png','geometria.json',...old.geometria.prateleiras.map(s=>`referencia-${s.prateleira}.png`)])await fs.copyFile(path.join(source,name),path.join(folder,name));
+ const now=new Date().toISOString();const row={...old,id,version:Math.max(...versions.map(r=>r.version))+1,createdAt:now,approvedAt:now,previousVersionId:old.id,items,referenciaValidada:old.referenciaValidada.map(i=>({...i,...bySku.get(i.sku)}))};await saveRow(row);res.json(row);
+ }finally{busy=false;}
+ }));
  app.post('/api/planogramas',upload,route(async(req,res)=>{
  if(busy)return res.status(409).json({error:'Cadastro em processamento'});busy=true;
  try{const fields=Object.fromEntries(['loja','setor','gondola'].map(k=>[k,String(req.body[k]||'').trim()]));if(Object.values(fields).some(v=>!v||v.length>100))throw Error('Informe loja, setor e gôndola');

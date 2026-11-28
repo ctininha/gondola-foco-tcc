@@ -26,7 +26,7 @@ app.get('/api/gestao/overview', (_req,res) => {
     const data = withDatabase(db => {
       const rows = db.prepare('SELECT id, created_at, corridor, module_name, status, result_json FROM audits ORDER BY created_at DESC, id DESC').all();
       const audits = rows.map(readAudit).filter(Boolean);
-      return { summary:summarize(audits), audits:audits.map(a => ({ id:a.id, createdAt:a.createdAt, corridor:a.corridor, module:a.module, status:a.status, indicators:a.indicators, photoQuality:a.photoQuality })) };
+      return { summary:summarize(audits), audits:audits.map(a => ({ id:a.id, createdAt:a.createdAt, corridor:a.corridor, module:a.module, status:a.status, planograma:a.planograma, indicators:a.indicators, photoQuality:a.photoQuality })) };
     });
     if (data.missing) return res.json({ summary:summarize([]), audits:[], setupRequired:true });
     return res.json(data);

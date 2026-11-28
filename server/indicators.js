@@ -26,11 +26,14 @@ export function calculateIndicators(items) {
 
   const indeterminate = items.filter(item => item.state === "I").length;
   const occurrences = [];
+  const fronts=items.filter(i=>["P","F","A"].includes(i.state)&&Number.isSafeInteger(i.frentesPrevistas)&&i.frentesPrevistas>0&&Number.isSafeInteger(i.frentesConfirmadas)&&i.frentesConfirmadas>=0);
+  const frontsExpected=fronts.reduce((s,i)=>s+i.frentesPrevistas,0),frontsMet=fronts.reduce((s,i)=>s+Math.min(i.frentesPrevistas,i.frentesConfirmadas),0);
   for (const item of items) {
     const add = (type, status = "Pendente") => occurrences.push({
       ...item, type, status, occurrenceKey: `${item.sku}::${type}`,
     });
     if (item.state === "A") add("Ruptura");
+    if(fronts.includes(item)&&["P","F"].includes(item.state)&&item.frentesConfirmadas<item.frentesPrevistas) add("Exposição parcial");
     if (item.state === "F") add("Posição");
     if (["P", "F"].includes(item.state) && item.priceStatus === "DIVERGENT") add("Preço");
   }
@@ -42,7 +45,7 @@ export function calculateIndicators(items) {
         : IGE >= 80 ? "Atenção" : "Crítico";
 
   return {
-    expected, V, A, P, Q, D, IR, ICP, IDP, IGE, classification,
+    expected, V, A, P, Q, D, IR, ICP, IDP, IGE, classification, ICF:frontsExpected&&fronts.length===expected?100*frontsMet/frontsExpected:null, frontsExpected, frontsMet, frontsEvaluated:fronts.length,
     indeterminate,
     positionCount: items.filter(item => item.state === "F").length,
     needsNewPhoto: expected > 0 && (indeterminate / expected) > 0.20,
